@@ -53,15 +53,40 @@ CREATE TABLE IF NOT EXISTS items (
 );
 """
 
-# Every rating tag found on an item. rater = model name (e.g. 'mistrall-small-4')
-# or the sentinel 'bare' for an un-attributed `_rating/<tier>` tag.
+# Every rating tag found on an item. rater = model name (e.g. 'mistrall-small-4'),
+# the sentinel 'bare' for an un-attributed `_rating/<tier>` tag, or 'ik' for
+# Jelle's OWN judgment (`_rating/<tier>/ik`) — the ground-truth rater.
 RATINGS_DDL = """
 CREATE TABLE IF NOT EXISTS ratings (
     item_id   TEXT NOT NULL REFERENCES items(id),
     tier      TEXT NOT NULL,          -- s|a|b|c|d|undefined (lowercased)
-    rater     TEXT NOT NULL,          -- model name, or 'bare'
+    rater     TEXT NOT NULL,          -- model name, 'bare', or 'ik' (Jelle's own)
     raw_tag   TEXT NOT NULL,          -- original tag name, case preserved
     PRIMARY KEY (item_id, rater)
+);
+"""
+
+# A focused knowledge question the shortlist generator was asked. Normalised so
+# labels key on a short stable id instead of the (long, volatile) question text.
+QUERIES_DDL = """
+CREATE TABLE IF NOT EXISTS queries (
+    id          INTEGER PRIMARY KEY,
+    text        TEXT NOT NULL UNIQUE,
+    created_at  TEXT NOT NULL
+);
+"""
+
+# Per-query relevance feedback: when a shortlist returns items for a query, Jelle
+# marks each relevant true/false. This is the bake-off ground-truth, harvested as
+# a BYPRODUCT of use — never an upfront blocking step. precision@10 is computed
+# per query from these rows.
+QUERY_LABELS_DDL = """
+CREATE TABLE IF NOT EXISTS query_labels (
+    query_id    INTEGER NOT NULL REFERENCES queries(id),
+    item_id     TEXT NOT NULL REFERENCES items(id),
+    relevant    INTEGER NOT NULL,     -- 1 = relevant, 0 = not relevant
+    labeled_at  TEXT NOT NULL,
+    PRIMARY KEY (query_id, item_id)
 );
 """
 
@@ -70,6 +95,7 @@ INDEXES_DDL = [
     "CREATE INDEX IF NOT EXISTS idx_items_type ON items(item_type);",
     "CREATE INDEX IF NOT EXISTS idx_ratings_rater ON ratings(rater);",
     "CREATE INDEX IF NOT EXISTS idx_ratings_tier ON ratings(tier);",
+    "CREATE INDEX IF NOT EXISTS idx_query_labels_item ON query_labels(item_id);",
 ]
 
 
@@ -93,6 +119,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
     """Create tables + indexes if absent. Idempotent."""
     conn.execute(ITEMS_DDL)
     conn.execute(RATINGS_DDL)
+    conn.execute(QUERIES_DDL)
+    conn.execute(QUERY_LABELS_DDL)
     for ddl in INDEXES_DDL:
         conn.execute(ddl)
     conn.commit()
