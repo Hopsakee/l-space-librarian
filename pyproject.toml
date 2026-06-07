@@ -15,6 +15,16 @@ cs-ingest = "consume_selection.ingest:main"
 cs-groundtruth = "consume_selection.groundtruth:main"
 cs-label = "consume_selection.labels:main"
 cs-fts = "consume_selection.fts:main"
+cs-embed = "consume_selection.embed:main"
+cs-match = "consume_selection.embed:main"
+
+[project.optional-dependencies]
+# Local in-process embeddings (sentence-transformers backend). Heavy (pulls torch);
+# kept optional so the core CLIs install light. Enable with: uv sync --extra embed
+embed = [
+    "sentence-transformers>=3.0",
+    "numpy>=1.26",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -28,3 +38,11 @@ packages = ["consume_selection"]
 # (Hopsakee/readwise-tools) for portability — same pattern as _TOLIBRARY_PODCAST.
 [tool.uv.sources]
 readwise-tools = { path = "../readwise-tools", editable = true }
+
+# NOTE on the `embed` extra: `sentence-transformers` pulls `torch`, which on Linux
+# drags in ~3GB of nvidia/CUDA wheels (gated only on sys_platform=='linux'). On a
+# disk-tight machine install CPU-only torch FIRST, e.g.:
+#   uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+# then `uv sync --extra embed`. BUT the preferred embedding path is the Ollama
+# backend (CONSUME_EMBED_BACKEND=ollama) — pure HTTP, NO torch at all. Use that on
+# the MacMini; the `embed` extra is only the in-process fallback.
