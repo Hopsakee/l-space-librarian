@@ -14,6 +14,7 @@ cs-init = "consume_selection.db:main"
 cs-ingest = "consume_selection.ingest:main"
 cs-groundtruth = "consume_selection.groundtruth:main"
 cs-label = "consume_selection.labels:main"
+cs-fts = "consume_selection.fts:main"
 
 [build-system]
 requires = ["hatchling"]
