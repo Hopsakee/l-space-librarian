@@ -94,9 +94,17 @@ class OllamaEmbedder(Embedder):
         return out
 
 
+_OLLAMA_DEFAULT_MODEL = "bge-m3"
+
+
 def get_embedder(backend: str = DEFAULT_BACKEND, model: str = DEFAULT_MODEL) -> Embedder:
     if backend == "ollama":
-        return OllamaEmbedder(model_name=model if model != DEFAULT_MODEL else "bge-m3")
+        # Only substitute the ollama default when the caller left model at the
+        # sentence-transformers compile-time default. Comparing against
+        # DEFAULT_MODEL broke when CONSUME_EMBED_MODEL was set (it redefines
+        # DEFAULT_MODEL, so an explicit env model equalled it and was ignored).
+        name = model if model != "intfloat/multilingual-e5-small" else _OLLAMA_DEFAULT_MODEL
+        return OllamaEmbedder(model_name=name)
     return SentenceTransformersEmbedder(model_name=model)
 
 
@@ -142,6 +150,7 @@ def embed_items(conn, embedder: Embedder, rebuild: bool = False, limit: int = 0)
 
 def match(conn, embedder: Embedder, query: str, k: int = 10) -> list[dict]:
     """Embed the query, cosine-rank items embedded with the same model."""
+    ensure_embedding_columns(conn)  # cs-match before any cs-embed run else 'no such column: embedding_model'
     import numpy as np
     qv = np.array(embedder.embed([query], kind="query")[0], dtype="float32")
     qn = qv / (np.linalg.norm(qv) + 1e-9)
