@@ -47,6 +47,8 @@ def pull(conn, docs: list[dict]) -> dict:
     rated_items = 0
     by_rater: dict[str, int] = {}
     for d in docs:
+        if not d.get("id"):
+            continue          # id-less doc: cannot key a rating row; skip (matches upsert_items filter)
         ratings = parse_ratings(d.get("tags") or {})
         if not ratings:
             continue
