@@ -144,6 +144,13 @@ def build_relevance_context(limit_chars: int = 6000) -> str:
     for label, path in parts:
         if path.exists():
             chunks.append(f"## {label}\n{path.read_text(encoding='utf-8')[:limit_chars]}")
+    if len(chunks) < len(parts):
+        # An empty/thin context makes the high-recall relevance gate wave every
+        # video through as relevant with no alarm. Surface it so a moved/renamed
+        # PAI profile dir doesn't silently degrade triage.
+        missing = [str(p) for _, p in parts if not p.exists()]
+        print(f"relevance_context_files_found={len(chunks)}/{len(parts)} "
+              f"missing={missing}", file=sys.stderr)
     return "\n\n".join(chunks)
 
 
@@ -290,8 +297,11 @@ def _log_run(counts: dict) -> None:
                "event_type": "run", **counts}
         with EXEC_LOG.open("a") as f:
             f.write(json.dumps(rec) + "\n")
-    except Exception:
-        pass
+    except Exception as exc:
+        # Don't crash the run over the audit log, but don't swallow silently
+        # either — a permanently-empty execution.jsonl should leave a trace.
+        print(f"log_run_error=1 ({type(exc).__name__}: {str(exc)[:100]})",
+              file=sys.stderr)
 
 
 # --- CLI --------------------------------------------------------------------
@@ -352,8 +362,18 @@ def main(
         if not transcript:
             no_transcript += 1        # ISC-24: graceful, not pruned, resumable next run
             continue
-        res = rate_text(transcript, prompt_body=quality_prompt,
-                        level="fast", model_slug=RATER)
+        try:
+            res = rate_text(transcript, prompt_body=quality_prompt,
+                            level="fast", model_slug=RATER)
+        except Exception as exc:
+            # A single rate_text failure (network, API shape, timeout) must NOT
+            # propagate out of the loop — that skips the end-of-loop conn.commit()
+            # and rolls back EVERY item written so far this run. Treat like a
+            # tier-less result: count it, keep going, stay resumable next run.
+            print(f"rate_error=1 video={it['video_id']} "
+                  f"({type(exc).__name__}: {str(exc)[:100]})", file=sys.stderr)
+            rate_failed += 1
+            continue
         tier = res.get("tier")        # rate_text already validates ∈ {S,A,B,C,D} (ISC-26)
         if not tier:
             rate_failed += 1
