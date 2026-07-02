@@ -117,8 +117,12 @@ def connect(override: str | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(path, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
-    conn.execute("PRAGMA busy_timeout = 30000;")
-    conn.execute("PRAGMA journal_mode = WAL;")  # persists in the db file; readers never block the writer
+    conn.execute("PRAGMA busy_timeout = 30000;")  # per-connection; safe
+    # NOTE: journal_mode=WAL is deliberately NOT set here. WAL is persistent in
+    # the db header (not per-connection); forcing it from library code would
+    # silently rewrite the shared live db and interacts with how backups copy
+    # the file. The live db is already WAL; changing that is an architecture
+    # decision for the backup strategy, not a library default. (audit 2026-07-02)
     return conn
 
 
