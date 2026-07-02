@@ -35,36 +35,40 @@ def rebuild_fts(conn) -> int:
     return conn.execute("SELECT COUNT(*) FROM items_fts").fetchone()[0]
 
 
-def _fts_safe_query(query: str) -> str:
-    """Turn arbitrary natural-language text into a valid FTS5 MATCH expression.
-
-    Raw user text ("hello AND", 'a "b', "foo OR") is interpreted as FTS5 query
-    syntax and raises OperationalError on stray operators/quotes. Tokenising and
-    quoting each token as a phrase makes any input a safe implicit-AND term
-    search — the sensible default for reading-advice queries.
-    """
+def _fts_tokens(query: str) -> str:
+    """Fallback: reduce arbitrary text to quoted phrase tokens (safe implicit-AND)."""
     import re
     tokens = re.findall(r"\w+", query, flags=re.UNICODE)
     return " ".join(f'"{t}"' for t in tokens)
 
 
-def search(conn, query: str, limit: int = 10) -> list[dict]:
-    """BM25 search over the FTS index; lower rank = better match.
-
-    The query is sanitised into quoted phrase tokens so that free-text input
-    (which is FTS5 syntax) can never crash the search with an OperationalError.
-    """
-    ensure_fts(conn)
-    safe = _fts_safe_query(query)
-    if not safe:
-        return []
+def _run_match(conn, expr: str, limit: int) -> list[dict]:
     rows = conn.execute(
         "SELECT f.item_id, i.title, bm25(items_fts) AS rank "
         "FROM items_fts f JOIN items i ON i.id = f.item_id "
         "WHERE items_fts MATCH ? ORDER BY rank LIMIT ?",
-        (safe, limit),
+        (expr, limit),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def search(conn, query: str, limit: int = 10) -> list[dict]:
+    """BM25 search over the FTS index; lower rank = better match.
+
+    Tries the raw query first so power-user FTS5 syntax (AND/OR/NEAR/prefix*)
+    keeps working. Only on an FTS5 syntax error (stray operator, unbalanced
+    quote in free-text) does it fall back to a safe quoted-token search instead
+    of crashing with OperationalError.
+    """
+    import sqlite3
+    ensure_fts(conn)
+    try:
+        return _run_match(conn, query, limit)
+    except sqlite3.OperationalError:
+        safe = _fts_tokens(query)
+        if not safe:
+            return []
+        return _run_match(conn, safe, limit)
 
 
 @call_parse
