@@ -7,6 +7,7 @@ requires-python = ">=3.10"
 dependencies = [
     "fastcore>=1.7",
     "readwise-tools",
+    "youtube-transcript-api>=1.0.0",
 ]
 
 [project.scripts]
@@ -17,6 +18,7 @@ cs-label = "consume_selection.labels:main"
 cs-fts = "consume_selection.fts:main"
 cs-embed = "consume_selection.embed:main"
 cs-match = "consume_selection.embed:main"
+cs-watchlater = "consume_selection.watchlater:main"
 
 [project.optional-dependencies]
 # Local in-process embeddings (sentence-transformers backend). Heavy (pulls torch);
