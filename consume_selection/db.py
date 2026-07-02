@@ -111,9 +111,14 @@ def connect(override: str | None = None) -> sqlite3.Connection:
     """Open (creating parent dir if needed) the consume.db with FK + row factory."""
     path = db_path(override)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    # timeout=30: the unattended nightly jobs (watchlater 03:30, readwise 04:00)
+    # can overlap on this file; the default 5s lock wait is too short for a bulk
+    # write and turns contention into a hard "database is locked" crash.
+    conn = sqlite3.connect(path, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute("PRAGMA busy_timeout = 30000;")
+    conn.execute("PRAGMA journal_mode = WAL;")  # persists in the db file; readers never block the writer
     return conn
 
 
