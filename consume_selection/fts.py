@@ -35,14 +35,34 @@ def rebuild_fts(conn) -> int:
     return conn.execute("SELECT COUNT(*) FROM items_fts").fetchone()[0]
 
 
+def _fts_safe_query(query: str) -> str:
+    """Turn arbitrary natural-language text into a valid FTS5 MATCH expression.
+
+    Raw user text ("hello AND", 'a "b', "foo OR") is interpreted as FTS5 query
+    syntax and raises OperationalError on stray operators/quotes. Tokenising and
+    quoting each token as a phrase makes any input a safe implicit-AND term
+    search — the sensible default for reading-advice queries.
+    """
+    import re
+    tokens = re.findall(r"\w+", query, flags=re.UNICODE)
+    return " ".join(f'"{t}"' for t in tokens)
+
+
 def search(conn, query: str, limit: int = 10) -> list[dict]:
-    """BM25 search over the FTS index; lower rank = better match."""
+    """BM25 search over the FTS index; lower rank = better match.
+
+    The query is sanitised into quoted phrase tokens so that free-text input
+    (which is FTS5 syntax) can never crash the search with an OperationalError.
+    """
     ensure_fts(conn)
+    safe = _fts_safe_query(query)
+    if not safe:
+        return []
     rows = conn.execute(
         "SELECT f.item_id, i.title, bm25(items_fts) AS rank "
         "FROM items_fts f JOIN items i ON i.id = f.item_id "
         "WHERE items_fts MATCH ? ORDER BY rank LIMIT ?",
-        (query, limit),
+        (safe, limit),
     ).fetchall()
     return [dict(r) for r in rows]
 
