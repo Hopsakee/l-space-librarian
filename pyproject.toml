@@ -1,7 +1,7 @@
 [project]
-name = "consume-selection"
+name = "l-space-librarian"
 version = "0.1.0"
-description = "Local consume-index for prioritising what to read/watch from the Readwise firehose. Stage 1: index substrate + ingest + ground-truth puller."
+description = "The Librarian that collects consumable items (Readwise Reader + YouTube Watch Later) into L-space — a local SQLite index (l-space.db) for prioritising what to read/watch."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

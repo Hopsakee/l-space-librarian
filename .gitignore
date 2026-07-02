@@ -1,5 +1,28 @@
-.venv/
+# Python
 __pycache__/
 *.pyc
-consume.db
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# The L-space DB is DATA — lives outside the repo (~/code_data/l-space-librarian/),
+# backed up separately. Never commit a database or its WAL/SHM sidecars.
 *.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+
+# Secrets / credentials / cookies — never commit (defence in depth; none exist here)
+.env
+.env.*
+*.token
+token
+secrets/
+*cookies*
+
+# OS
+.DS_Store

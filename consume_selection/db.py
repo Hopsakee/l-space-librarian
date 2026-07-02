@@ -13,10 +13,10 @@ The consume-index is a single-file SQLite read-model. Two tables in this slice:
             GENERICALLY because the ISA's assumed `rating/<tier>/zelf` tag does
             not exist in the real data (see ISA Decisions 2026-06-07).
 
-Default location ~/code_data/denkraam/consume.db — "denkraam" (Kwetal's word for
-Bommel's 'thinking window' in Marten Toonder's novels) is the reading-ingestion
-project home, sibling to ~/code_data/inconceivable/. Override with --db or the
-CONSUME_DB env var.
+Default location ~/code_data/l-space-librarian/l-space.db — "L-space" is the
+library-space of Unseen University (Terry Pratchett's Discworld); this project is
+the librarian that collects consumable items into it. Sibling to
+~/code_data/inconceivable/. Override with --db or the CONSUME_DB env var.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from pathlib import Path
 
 from fastcore.script import call_parse
 
-DEFAULT_DB = Path.home() / "code_data" / "denkraam" / "consume.db"
+DEFAULT_DB = Path.home() / "code_data" / "l-space-librarian" / "l-space.db"
 
 # --- schema -----------------------------------------------------------------
 
