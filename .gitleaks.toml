@@ -1,0 +1,28 @@
+title = "Hopsakee personal-info + secrets scan"
+
+# Extend gitleaks' built-in ruleset (AWS keys, generic API tokens, private keys,
+# etc.) with a small, high-precision set of Jelle's own personal identifiers.
+# Kept deliberately narrow — broad terms like "jelle" or "hoggle" would false-
+# positive on ordinary commit-author metadata and public self-references
+# (this repo IS github.com/Hopsakee/skill-keep-sync). Only add a rule here if
+# it's specific enough that a true hit is always worth stopping the push for.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "personal-email-posteo"
+description = "Jelle's personal email address embedded as literal content"
+regex = '''jdejong@posteo\.nl'''
+tags = ["personal-info", "pii"]
+
+[[rules]]
+id = "private-repo-hoggle-brain"
+description = "Reference to the private hoggle-brain repo name"
+regex = '''(?i)hoggle-brain'''
+tags = ["personal-info", "internal-ref"]
+
+# NOTE: a "/home/jelle literal path" rule was tried and dropped — gitleaks'
+# default global allowlist (loaded via useDefault) swallows generic path-like
+# matches to cut noise, and fighting that would mean weakening the allowlist
+# for the whole default ruleset. Not worth it for the lowest-severity of the
+# three candidate leaks.
