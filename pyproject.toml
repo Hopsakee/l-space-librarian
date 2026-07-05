@@ -22,6 +22,7 @@ cs-watchlater = "consume_selection.watchlater:main"
 cs-librarything = "consume_selection.librarything:main"
 cs-toread = "consume_selection.toread:main"
 cs-podcasts = "consume_selection.podcasts:main"
+cs-hopswiki = "consume_selection.hopswiki:main"
 
 [project.optional-dependencies]
 # Local in-process embeddings (sentence-transformers backend). Heavy (pulls torch);
