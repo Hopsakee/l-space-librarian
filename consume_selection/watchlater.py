@@ -150,23 +150,42 @@ WL_SEEN_DDL = """
 CREATE TABLE IF NOT EXISTS wl_seen (
     video_id   TEXT PRIMARY KEY,
     judged_at  TEXT NOT NULL,   -- last relevance judgement (ISO-8601 UTC)
-    relevant   INTEGER NOT NULL -- 1 = relevant (also in items), 0 = rejected
+    relevant   INTEGER NOT NULL,-- 1 = relevant (also in items), 0 = rejected
+    focus_fp   TEXT             -- fingerprint of the focus context at judge time
 );
 """
 
 
 def ensure_wl_seen(conn) -> None:
     conn.execute(WL_SEEN_DDL)
+    # Guarded migration: an existing wl_seen (pre-focus-fingerprint) gains the column.
+    have = {r[1] for r in conn.execute("PRAGMA table_info(wl_seen)")}
+    if "focus_fp" not in have:
+        conn.execute("ALTER TABLE wl_seen ADD COLUMN focus_fp TEXT;")
 
 
-def mark_seen(conn, video_id: str, relevant: bool) -> None:
-    """Record a relevance judgement, keyed on the stable video id. Idempotent —
-    a re-judge updates judged_at + relevant in place (never a duplicate row)."""
+def focus_fingerprint() -> str:
+    """A stable fingerprint of Jelle's relevance context (Focus.md + Telos). A REJECTED
+    video re-enters the frontier when this changes — i.e. when he rewrites his quarterly
+    focus (Jelle's choice 1b: re-judge on focus-shift, not a fixed clock)."""
+    import hashlib
+    parts: list[str] = []
+    for p in (PAI_USER / "Focus.md", PAI_USER / "Telos" / "PrincipalTelos.md"):
+        try:
+            parts.append(p.read_text(encoding="utf-8"))
+        except OSError:
+            parts.append("")
+    return hashlib.sha1("\x1e".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def mark_seen(conn, video_id: str, relevant: bool, focus_fp: str) -> None:
+    """Record a relevance judgement + the focus fingerprint it was made under, keyed
+    on the stable video id. Idempotent — a re-judge updates in place (no dup row)."""
     conn.execute(
-        "INSERT INTO wl_seen (video_id, judged_at, relevant) VALUES (?, ?, ?) "
+        "INSERT INTO wl_seen (video_id, judged_at, relevant, focus_fp) VALUES (?, ?, ?, ?) "
         "ON CONFLICT(video_id) DO UPDATE SET judged_at=excluded.judged_at, "
-        "relevant=excluded.relevant",
-        [video_id, _now(), 1 if relevant else 0],
+        "relevant=excluded.relevant, focus_fp=excluded.focus_fp",
+        [video_id, _now(), 1 if relevant else 0, focus_fp],
     )
 
 
@@ -204,22 +223,20 @@ def list_playlist_entries(playlist_url: str, browser: str,
     return out, proc.returncode
 
 
-def eligible_entries(conn, entries: list[dict], rejudge_days: int) -> list[dict]:
+def eligible_entries(conn, entries: list[dict], current_fp: str) -> list[dict]:
     """Filter flat entries to those needing judgement, preserving playlist order:
-    never-seen, OR rejected longer ago than `rejudge_days` (focus may have shifted).
-    Relevant/ingested ids are skipped permanently."""
-    from datetime import timedelta
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=rejudge_days)).isoformat()
-    seen = {r["video_id"]: (r["relevant"], r["judged_at"])
-            for r in conn.execute("SELECT video_id, relevant, judged_at FROM wl_seen")}
+    never-seen, OR rejected under a DIFFERENT focus fingerprint (Jelle's focus has
+    shifted since — re-judge). Relevant/ingested ids are skipped permanently."""
+    seen = {r["video_id"]: (r["relevant"], r["focus_fp"])
+            for r in conn.execute("SELECT video_id, relevant, focus_fp FROM wl_seen")}
     out: list[dict] = []
     for e in entries:
         s = seen.get(e["video_id"])
         if s is None:
             out.append(e)                       # never judged
-        elif s[0] == 0 and (s[1] or "") < cutoff:
-            out.append(e)                       # rejected, but stale → re-judge
-        # relevant==1 (ingested) or recently-rejected → skip
+        elif s[0] == 0 and (s[1] or "") != current_fp:
+            out.append(e)                       # rejected under an older focus → re-judge
+        # relevant==1 (ingested) or rejected-under-same-focus → skip
     return out
 
 
@@ -276,12 +293,13 @@ def judge_relevance(item: dict, context: str) -> tuple[bool, str]:
         return True, "parse-fallback (kept, high-recall)"
 
 
-def ingest_item(conn, item: dict) -> None:
-    """Idempotent upsert of ONE relevant video into consume.db `items`.
-    Enrichment columns (quality_auto, ratings, embedding, …) are never touched."""
+def ingest_item(conn, item: dict, source: str = "youtube-wl") -> None:
+    """Idempotent upsert of ONE relevant video into consume.db `items`. `source` tags
+    which playlist it came from (youtube-wl | youtube-course). Enrichment columns
+    (quality_auto, ratings, embedding, …) are never touched."""
     row = {
         "id": item["video_id"],
-        "source": "youtube-wl",
+        "source": source,
         "title": item["title"],
         "author": item["channel"],
         "url": item["url"],
@@ -419,16 +437,17 @@ def main(
     dry_run: bool = False,          # read + judge relevance only, write nothing / no cost
     db: str = "",                   # consume.db path override (tests use a temp db)
     prune_dir: str = "",            # where the prune note is staged (default PRUNE_DIR)
-    rejudge_days: int = 90,         # a REJECTED video re-enters the frontier after this many days (focus shifts)
+    source: str = "youtube-wl",     # items.source tag (e.g. youtube-course for the Courses playlist)
 ):
-    "Walk YouTube Watch Later as a moving frontier: judge the next N UNPROCESSED videos (re-judging stale rejections), keep the relevant, rate their content, split into recommend + prune lanes."
+    "Walk a YouTube playlist as a moving frontier: judge the next N UNPROCESSED videos (re-judging rejections when focus shifts), keep the relevant, rate their content, split into recommend + prune lanes."
     conn = connect(db or None)
     init_schema(conn)
     ensure_wl_seen(conn)
-    # Frontier: list ALL ids cheaply, drop the already-judged (relevant, or rejected
-    # within rejudge_days), full-resolve only the next `limit` UNPROCESSED for judging.
+    focus_fp = focus_fingerprint()
+    # Frontier: list ALL ids cheaply, drop the already-judged (relevant → permanent;
+    # rejected under the SAME focus → skip), full-resolve only the next `limit` for judging.
     entries, rc = list_playlist_entries(playlist_url, browser)
-    eligible = eligible_entries(conn, entries, rejudge_days)
+    eligible = eligible_entries(conn, entries, focus_fp)
     frontier = eligible[:limit] if limit else eligible
     items, rc2 = resolve_videos([e["url"] for e in frontier], browser)
     rc = rc or rc2
@@ -460,14 +479,14 @@ def main(
             continue
         if not rel:
             if not dry_run:
-                mark_seen(conn, it["video_id"], False)  # rejected → skip for rejudge_days
+                mark_seen(conn, it["video_id"], False, focus_fp)  # rejected under this focus
             continue          # ISC-34: non-relevant → no transcript, no rating, no prune
         relevant += 1
         if dry_run:
             continue          # dry-run stays relevance-only: no transcript, no LLM cost, no writes
 
-        mark_seen(conn, it["video_id"], True)   # relevant → judged, skip permanently (it's a candidate)
-        ingest_item(conn, it)
+        mark_seen(conn, it["video_id"], True, focus_fp)  # relevant → judged, skip permanently (it's a candidate)
+        ingest_item(conn, it, source)
         ingested += 1
 
         # --- quality: content-only (transcript), never metadata (ISC-35) -----
