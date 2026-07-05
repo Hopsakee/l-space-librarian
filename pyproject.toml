@@ -19,6 +19,7 @@ cs-fts = "consume_selection.fts:main"
 cs-embed = "consume_selection.embed:main"
 cs-match = "consume_selection.embed:main"
 cs-watchlater = "consume_selection.watchlater:main"
+cs-librarything = "consume_selection.librarything:main"
 
 [project.optional-dependencies]
 # Local in-process embeddings (sentence-transformers backend). Heavy (pulls torch);
