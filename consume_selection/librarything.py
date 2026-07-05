@@ -50,7 +50,12 @@ from consume_selection.ingest import upsert_row
 
 # --- constants --------------------------------------------------------------
 
-DOWNLOADS = Path.home() / "Drive" / "Downloads"
+# Export drop zones, searched in order; newest file (by mtime) across BOTH wins.
+# HoggleTransport is Jelle's preferred drop for exports he hands to Hoggle (2026-07-05).
+EXPORT_DIRS = [
+    Path.home() / "Drive" / "HoggleTransport",
+    Path.home() / "Drive" / "Downloads",
+]
 EXPORT_GLOB = "librarything_Hopsakee_*.json"
 
 # Collection taxonomy (ISC-3.2). Everything outside these three sets is LOGGED.
@@ -93,18 +98,21 @@ def _now() -> str:
 
 
 def newest_export(explicit: str = "") -> Path:
-    """Resolve the export path: explicit arg > newest matching download."""
+    """Resolve the export path: explicit arg > newest matching file across EXPORT_DIRS.
+    Newest = most recently modified (mtime), so the last export Jelle drops wins
+    regardless of which drop zone it lands in."""
     if explicit:
         p = Path(explicit).expanduser()
         if not p.exists():
             raise SystemExit(f"librarything export not found: {p}")
         return p
-    matches = sorted(glob.glob(str(DOWNLOADS / EXPORT_GLOB)))
+    matches: list[Path] = []
+    for d in EXPORT_DIRS:
+        matches += [Path(m) for m in glob.glob(str(d / EXPORT_GLOB))]
     if not matches:
-        raise SystemExit(
-            f"no LibraryThing export found matching {DOWNLOADS / EXPORT_GLOB}"
-        )
-    return Path(matches[-1])  # lexicographic sort works: the ts suffix is zero-padded
+        searched = " or ".join(str(d / EXPORT_GLOB) for d in EXPORT_DIRS)
+        raise SystemExit(f"no LibraryThing export found matching {searched}")
+    return max(matches, key=lambda p: p.stat().st_mtime)
 
 
 def classify(collections: list[str]) -> str:
