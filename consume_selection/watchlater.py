@@ -133,6 +133,111 @@ def read_playlist(playlist_url: str, browser: str, limit: int,
     return _parse_ndjson(proc.stdout), proc.returncode
 
 
+# --- id-frontier: process the next N UNPROCESSED videos, not always the top-15 ---
+#
+# The old flow read `-I 1:limit` (playlist positions 1..limit) every run, so it
+# re-judged the same top-15 nightly (wasting a relevance call each) and NEVER reached
+# deeper videos. The frontier flow instead:
+#   1. cheaply lists ALL playlist ids (--flat-playlist, one request, no per-video resolve),
+#   2. skips ids already JUDGED (the `wl_seen` ledger: relevant OR rejected),
+#   3. full-resolves + judges only the next `limit` UNPROCESSED ids.
+# Relevance is temporal (it tracks Jelle's shifting focus), so a REJECTED video is not
+# skipped forever — after `rejudge_days` it re-enters the frontier to be re-judged
+# against the current focus. A RELEVANT (ingested) video is skipped permanently — it is
+# already a candidate in `items`.
+
+WL_SEEN_DDL = """
+CREATE TABLE IF NOT EXISTS wl_seen (
+    video_id   TEXT PRIMARY KEY,
+    judged_at  TEXT NOT NULL,   -- last relevance judgement (ISO-8601 UTC)
+    relevant   INTEGER NOT NULL -- 1 = relevant (also in items), 0 = rejected
+);
+"""
+
+
+def ensure_wl_seen(conn) -> None:
+    conn.execute(WL_SEEN_DDL)
+
+
+def mark_seen(conn, video_id: str, relevant: bool) -> None:
+    """Record a relevance judgement, keyed on the stable video id. Idempotent —
+    a re-judge updates judged_at + relevant in place (never a duplicate row)."""
+    conn.execute(
+        "INSERT INTO wl_seen (video_id, judged_at, relevant) VALUES (?, ?, ?) "
+        "ON CONFLICT(video_id) DO UPDATE SET judged_at=excluded.judged_at, "
+        "relevant=excluded.relevant",
+        [video_id, _now(), 1 if relevant else 0],
+    )
+
+
+def build_flatlist_cmd(playlist_url: str, browser: str) -> list[str]:
+    """Cheap ids-only listing of the WHOLE playlist (no per-video resolution).
+    Unit-testable without invoking yt-dlp; carries no mutating flag."""
+    cmd = ["yt-dlp", "--flat-playlist", "--dump-json",
+           "--ignore-errors", "--no-warnings"]
+    if browser:
+        cmd += ["--cookies-from-browser", browser]
+    cmd.append(playlist_url)
+    return cmd
+
+
+def list_playlist_entries(playlist_url: str, browser: str,
+                          timeout: int = 300) -> tuple[list[dict], int]:
+    """Flat-list every playlist entry: [{video_id, title, url}], newest-first."""
+    proc = subprocess.run(build_flatlist_cmd(playlist_url, browser),
+                          capture_output=True, text=True, timeout=timeout)
+    out: list[dict] = []
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        vid = d.get("id")
+        if not vid:
+            continue
+        out.append({"video_id": vid,
+                    "title": d.get("title") or "",
+                    "url": d.get("url") or f"https://www.youtube.com/watch?v={vid}"})
+    return out, proc.returncode
+
+
+def eligible_entries(conn, entries: list[dict], rejudge_days: int) -> list[dict]:
+    """Filter flat entries to those needing judgement, preserving playlist order:
+    never-seen, OR rejected longer ago than `rejudge_days` (focus may have shifted).
+    Relevant/ingested ids are skipped permanently."""
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=rejudge_days)).isoformat()
+    seen = {r["video_id"]: (r["relevant"], r["judged_at"])
+            for r in conn.execute("SELECT video_id, relevant, judged_at FROM wl_seen")}
+    out: list[dict] = []
+    for e in entries:
+        s = seen.get(e["video_id"])
+        if s is None:
+            out.append(e)                       # never judged
+        elif s[0] == 0 and (s[1] or "") < cutoff:
+            out.append(e)                       # rejected, but stale → re-judge
+        # relevant==1 (ingested) or recently-rejected → skip
+    return out
+
+
+def resolve_videos(urls: list[str], browser: str,
+                   timeout: int = 300) -> tuple[list[dict], int]:
+    """Full-resolve SPECIFIC video urls (title/channel/description) for the relevance
+    judge — reuses the metadata-only command + _parse_ndjson path."""
+    if not urls:
+        return [], 0
+    cmd = ["yt-dlp", "--dump-json", "--skip-download",
+           "--ignore-no-formats-error", "--ignore-errors", "--no-warnings"]
+    if browser:
+        cmd += ["--cookies-from-browser", browser]
+    cmd += urls
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    return _parse_ndjson(proc.stdout), proc.returncode
+
+
 def build_relevance_context(limit_chars: int = 6000) -> str:
     """Assemble Jelle's current focus/goals/projects into a prompt string."""
     parts: list[tuple[str, Path]] = [
@@ -310,15 +415,23 @@ def _log_run(counts: dict) -> None:
 def main(
     browser: str = "",              # browser for --cookies-from-browser (WL needs it)
     playlist_url: str = WL_URL,     # override for public-playlist testing
-    limit: int = 0,                 # cap videos processed (0 = all)
+    limit: int = 15,                # process at most N UNPROCESSED videos per run (0 = all eligible)
     dry_run: bool = False,          # read + judge relevance only, write nothing / no cost
     db: str = "",                   # consume.db path override (tests use a temp db)
     prune_dir: str = "",            # where the prune note is staged (default PRUNE_DIR)
+    rejudge_days: int = 90,         # a REJECTED video re-enters the frontier after this many days (focus shifts)
 ):
-    "Read YouTube Watch Later, keep the relevant videos, rate their content, and split them into recommend + prune lanes."
+    "Walk YouTube Watch Later as a moving frontier: judge the next N UNPROCESSED videos (re-judging stale rejections), keep the relevant, rate their content, split into recommend + prune lanes."
     conn = connect(db or None)
     init_schema(conn)
-    items, rc = read_playlist(playlist_url, browser, limit)
+    ensure_wl_seen(conn)
+    # Frontier: list ALL ids cheaply, drop the already-judged (relevant, or rejected
+    # within rejudge_days), full-resolve only the next `limit` UNPROCESSED for judging.
+    entries, rc = list_playlist_entries(playlist_url, browser)
+    eligible = eligible_entries(conn, entries, rejudge_days)
+    frontier = eligible[:limit] if limit else eligible
+    items, rc2 = resolve_videos([e["url"] for e in frontier], browser)
+    rc = rc or rc2
     context = build_relevance_context()
     pdir = Path(prune_dir).expanduser() if prune_dir else PRUNE_DIR
     # Load the estimate-quality prompt ONCE (default rate_text pulls the repo +
@@ -346,11 +459,14 @@ def main(
             failed += 1
             continue
         if not rel:
+            if not dry_run:
+                mark_seen(conn, it["video_id"], False)  # rejected → skip for rejudge_days
             continue          # ISC-34: non-relevant → no transcript, no rating, no prune
         relevant += 1
         if dry_run:
             continue          # dry-run stays relevance-only: no transcript, no LLM cost, no writes
 
+        mark_seen(conn, it["video_id"], True)   # relevant → judged, skip permanently (it's a candidate)
         ingest_item(conn, it)
         ingested += 1
 
@@ -397,14 +513,18 @@ def main(
         prune_path = write_prune_note(prune_entries, pdir, today_iso())
 
     pruned = len(prune_entries)
+    seen_total = len(entries)
+    eligible_n = len(eligible)
     counts = {"read": read, "relevant": relevant, "ingested": ingested,
               "rated": rated, "sa": sa, "pruned": pruned,
               "no_transcript": no_transcript, "rate_failed": rate_failed,
-              "failed": failed, "dry_run": dry_run, "ytdlp_rc": rc,
+              "failed": failed, "playlist_total": seen_total, "eligible": eligible_n,
+              "dry_run": dry_run, "ytdlp_rc": rc,
               "prune_note": str(prune_path) if prune_path else ""}
     print(f"read={read} relevant={relevant} ingested={ingested} rated={rated} "
           f"sa={sa} pruned={pruned} no_transcript={no_transcript} "
-          f"rate_failed={rate_failed} failed={failed}")
+          f"rate_failed={rate_failed} failed={failed} "
+          f"playlist_total={seen_total} eligible={eligible_n}")
     if prune_path:
         print(f"prune_note={prune_path}")
     _log_run(counts)
