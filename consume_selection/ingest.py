@@ -30,6 +30,23 @@ _INGEST_COLS = [
 ]
 
 
+def upsert_row(conn, row: dict, *, extra_cols: tuple[str, ...] = ()) -> None:
+    """Idempotent single-row upsert into `items`, shared by every source adapter so
+    the INSERT…ON CONFLICT tail lives in ONE place (was copy-pasted across
+    librarything/toread/podcasts — /simplify 2026-07-05). Writes id + the ingest-owned
+    columns (`_INGEST_COLS`) + the adapter's `extra_cols` (e.g. consumed/consumed_at,
+    duration_minutes); enrichment columns (embedding, quality_*, topic_tags) are never
+    in the write set, so re-ingest never clobbers them. `row` must carry every written key."""
+    cols = ["id"] + _INGEST_COLS + list(extra_cols)
+    placeholders = ", ".join(["?"] * len(cols))
+    update_set = ", ".join(f"{c}=excluded.{c}" for c in _INGEST_COLS + list(extra_cols))
+    conn.execute(
+        f"INSERT INTO items ({', '.join(cols)}) VALUES ({placeholders}) "
+        f"ON CONFLICT(id) DO UPDATE SET {update_set}",
+        [row[c] for c in cols],
+    )
+
+
 def _row_from_doc(doc: dict, now: str) -> dict:
     """Map a Readwise document object to an items row dict."""
     return {

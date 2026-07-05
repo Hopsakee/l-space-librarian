@@ -40,7 +40,7 @@ from urllib.parse import urlparse
 from fastcore.script import call_parse
 
 from consume_selection.db import connect, init_schema
-from consume_selection.ingest import _INGEST_COLS
+from consume_selection.ingest import upsert_row
 
 # --- constants --------------------------------------------------------------
 
@@ -50,10 +50,6 @@ ITUNES_NS = "{http://www.itunes.com/dtds/podcast-1.0.dtd}"
 FETCH_TIMEOUT = 20          # seconds per feed
 FETCH_WORKERS = 8           # parallel feed fetches
 UA = "l-space-librarian/0.1 (personal podcast indexer; read-only)"
-
-# duration_minutes is added to _INGEST_COLS-adjacent write set here (this adapter
-# owns it for podcasts); it is migrated into items by db.init_schema.
-_PODCAST_COLS = ["id"] + _INGEST_COLS + ["duration_minutes"]
 
 
 def _now() -> str:
@@ -183,14 +179,7 @@ def upsert_episode(conn, ep: dict) -> None:
         "ingested_at": _now(),
         "duration_minutes": ep["duration_minutes"],
     }
-    write_cols = _INGEST_COLS + ["duration_minutes"]
-    placeholders = ", ".join(["?"] * len(_PODCAST_COLS))
-    update_set = ", ".join(f"{c}=excluded.{c}" for c in write_cols)
-    conn.execute(
-        f"INSERT INTO items ({', '.join(_PODCAST_COLS)}) VALUES ({placeholders}) "
-        f"ON CONFLICT(id) DO UPDATE SET {update_set}",
-        [row[c] for c in _PODCAST_COLS],
-    )
+    upsert_row(conn, row, extra_cols=("duration_minutes",))
 
 
 # --- CLI --------------------------------------------------------------------

@@ -46,7 +46,7 @@ from pathlib import Path
 from fastcore.script import call_parse
 
 from consume_selection.db import connect, init_schema
-from consume_selection.ingest import _INGEST_COLS
+from consume_selection.ingest import upsert_row
 
 # --- constants --------------------------------------------------------------
 
@@ -176,19 +176,10 @@ def row_from_record(rec: dict, kind: str) -> dict:
 
 
 def upsert_item(conn, row: dict, *, consumed: int, consumed_at_val: str | None) -> None:
-    """Idempotent upsert of ONE book into `items`. Refreshes the ingest-owned
-    columns (via _INGEST_COLS, shared with watchlater/ingest so they never drift)
-    PLUS the read-state pair (consumed/consumed_at) which this adapter owns. Never
-    touches enrichment columns (embedding, quality_auto, topic_tags)."""
-    cols = ["id"] + _INGEST_COLS + ["consumed", "consumed_at"]
-    row = {**row, "consumed": consumed, "consumed_at": consumed_at_val}
-    placeholders = ", ".join(["?"] * len(cols))
-    update_set = ", ".join(f"{c}=excluded.{c}" for c in _INGEST_COLS + ["consumed", "consumed_at"])
-    conn.execute(
-        f"INSERT INTO items ({', '.join(cols)}) VALUES ({placeholders}) "
-        f"ON CONFLICT(id) DO UPDATE SET {update_set}",
-        [row[c] for c in cols],
-    )
+    """Idempotent upsert of ONE book — read-state (consumed/consumed_at) is the
+    adapter-owned extra; the SQL tail is the shared `ingest.upsert_row`."""
+    upsert_row(conn, {**row, "consumed": consumed, "consumed_at": consumed_at_val},
+               extra_cols=("consumed", "consumed_at"))
 
 
 def write_rating(conn, item_id: str, tier: str, stars) -> None:

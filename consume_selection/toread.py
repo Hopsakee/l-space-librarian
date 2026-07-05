@@ -28,14 +28,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastcore.script import call_parse
 
 from consume_selection.db import connect, db_path, init_schema
-from consume_selection.ingest import _INGEST_COLS
+from consume_selection.ingest import upsert_row
 
 # --- constants --------------------------------------------------------------
 
@@ -146,16 +145,9 @@ def row_from_file(rel: Path, root: Path) -> dict:
 
 def upsert_file(conn, row: dict) -> None:
     """Idempotent upsert of ONE ToRead file. Re-appearing after a delist clears the
-    GONE state: consumed→0 so it can be recommended again. Enrichment cols untouched."""
-    cols = ["id"] + _INGEST_COLS + ["consumed", "consumed_at"]
-    row = {**row, "consumed": 0, "consumed_at": None}
-    placeholders = ", ".join(["?"] * len(cols))
-    update_set = ", ".join(f"{c}=excluded.{c}" for c in _INGEST_COLS + ["consumed", "consumed_at"])
-    conn.execute(
-        f"INSERT INTO items ({', '.join(cols)}) VALUES ({placeholders}) "
-        f"ON CONFLICT(id) DO UPDATE SET {update_set}",
-        [row[c] for c in cols],
-    )
+    GONE state: consumed→0 so it can be recommended again (shared `ingest.upsert_row`)."""
+    upsert_row(conn, {**row, "consumed": 0, "consumed_at": None},
+               extra_cols=("consumed", "consumed_at"))
 
 
 # --- CLI --------------------------------------------------------------------
