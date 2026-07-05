@@ -51,9 +51,17 @@ CREATE TABLE IF NOT EXISTS items (
     topic_tags    TEXT,               -- JSON array of topic tags
     embedding     BLOB,               -- summary embedding (vector bytes)
     consumed      INTEGER NOT NULL DEFAULT 0,  -- read-state (F11; flow built later)
-    consumed_at   TEXT
+    consumed_at   TEXT,
+    duration_minutes INTEGER          -- playback minutes for time-bearing items (podcasts/videos)
 );
 """
+
+# Columns added AFTER the first ITEMS_DDL shipped. init_schema runs a guarded
+# ALTER for each so an existing db (which CREATE TABLE IF NOT EXISTS won't touch)
+# migrates in place — migration-safe, no flag day. Fresh dbs get them from the DDL.
+_MIGRATION_COLUMNS = {
+    "duration_minutes": "INTEGER",   # F-L: itunes:duration for podcasts; benefits videos later
+}
 
 # Every rating tag found on an item. rater = model name (e.g. 'mistrall-small-4'),
 # the sentinel 'bare' for an un-attributed `_rating/<tier>` tag, or 'ik' for
@@ -126,12 +134,22 @@ def connect(override: str | None = None) -> sqlite3.Connection:
     return conn
 
 
+def _migrate_columns(conn: sqlite3.Connection) -> None:
+    """Guarded ALTER TABLE for columns added after the first ITEMS_DDL shipped.
+    Idempotent: only adds a column absent from the live table."""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(items)")}
+    for col, decl in _MIGRATION_COLUMNS.items():
+        if col not in have:
+            conn.execute(f"ALTER TABLE items ADD COLUMN {col} {decl};")
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
-    """Create tables + indexes if absent. Idempotent."""
+    """Create tables + indexes if absent, migrate late-added columns. Idempotent."""
     conn.execute(ITEMS_DDL)
     conn.execute(RATINGS_DDL)
     conn.execute(QUERIES_DDL)
     conn.execute(QUERY_LABELS_DDL)
+    _migrate_columns(conn)
     for ddl in INDEXES_DDL:
         conn.execute(ddl)
     conn.commit()
