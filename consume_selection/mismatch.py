@@ -77,6 +77,9 @@ def _resolve_from_items(conn, video_id: str) -> tuple[str | None, str | None, st
     ).fetchone()
     channel = row["author"] if row is not None else None
     title = row["title"] if row is not None else None
+    # 'claude-haiku-yt' mirrors watchlater.RATER; NOT imported (watchlater imports this module,
+    # so importing back would be circular). This only orders a display-only tier preference, so
+    # if RATER ever drifts the query falls back to "any tier" — harmless (L1, Engineer review).
     trow = conn.execute(
         "SELECT tier FROM ratings WHERE item_id = ? "
         "ORDER BY (rater = 'claude-haiku-yt') DESC LIMIT 1",
@@ -99,7 +102,9 @@ def record_mismatch(conn, video_id: str, decision: str, note: str = "",
     # (Engineer + Advisor review, 2026-07-19.)
     channel = (r_channel or channel or "").strip()
     title = r_title or title
-    my_tier = r_tier or my_tier
+    # Normalize to the lowercased tier convention `ratings` uses, so the ledger is tidy whether
+    # the tier was resolved (already lowercased) or passed in uppercase (L2, Engineer review).
+    my_tier = (r_tier or my_tier or "").lower() or None
     if not channel:
         raise ValueError(
             f"no channel for video {video_id!r}: not ingested and no --channel given")
