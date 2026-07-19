@@ -368,14 +368,22 @@ def write_rating(conn, item_id: str, tier: str) -> None:
 def _quality_reason(quality: dict, fallback: str = "low quality") -> str:
     """Pull a one-line human reason out of the estimate-quality verdict. The
     rubric emits 'Why this tier' + 'Verdict'; match case-insensitively over a
-    preferred order before falling back to the relevance reason."""
+    preferred order before falling back to the relevance reason.
+
+    The estimate-quality prompt already bounds 'Why this tier' to 2 sentences
+    max, so no hard truncation is applied for the normal case (a prior 160-char
+    cap regularly cut real verdicts off mid-sentence). A generous word-boundary
+    safety cap still guards against a malformed/runaway response."""
     if isinstance(quality, dict):
         lower = {k.lower(): v for k, v in quality.items()}
         for key in ("why this tier", "verdict", "summary", "reason",
                     "justification"):
             val = lower.get(key)
             if isinstance(val, str) and val.strip():
-                return val.strip()[:160]
+                text = val.strip()
+                if len(text) > 600:
+                    text = text[:600].rsplit(" ", 1)[0] + "…"
+                return text
     return fallback
 
 
