@@ -92,9 +92,14 @@ def record_mismatch(conn, video_id: str, decision: str, note: str = "",
     """Idempotent upsert of ONE contradiction, keyed on video_id. Missing channel/title/tier
     are resolved from the ingested item. Raises ValueError if no channel can be determined."""
     r_channel, r_title, r_tier = _resolve_from_items(conn, video_id)
-    channel = channel or r_channel
-    title = title or r_title
-    my_tier = my_tier or r_tier
+    # Ground-truth author WINS: watchlater compares its live yt-dlp channel (== items.author)
+    # against this stored key, so for an ingested video the resolved author is the only string
+    # that can match. --channel is a fallback for un-ingested videos only. Strip both here and
+    # at the compare site so trailing-whitespace drift can't silently defeat trust.
+    # (Engineer + Advisor review, 2026-07-19.)
+    channel = (r_channel or channel or "").strip()
+    title = r_title or title
+    my_tier = r_tier or my_tier
     if not channel:
         raise ValueError(
             f"no channel for video {video_id!r}: not ingested and no --channel given")
@@ -118,7 +123,7 @@ def trusted_channels(conn, threshold: int = TRUST_THRESHOLD) -> set[str]:
     over the line — trust requires distinct contradicted videos."""
     ensure_wl_mismatch(conn)
     rows = conn.execute(
-        "SELECT channel, COUNT(*) AS n FROM wl_mismatch "
+        "SELECT channel, COUNT(DISTINCT video_id) AS n FROM wl_mismatch "
         "GROUP BY channel HAVING n >= ?", [threshold]
     ).fetchall()
     return {r["channel"] for r in rows}

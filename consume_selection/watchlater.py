@@ -544,7 +544,7 @@ def main(
         rated += 1
         if tier in ("S", "A"):
             sa += 1                    # recommendable via _READING_ADVICE (already ingested + rated)
-        elif it["channel"] in trusted:   # trusted channel → suppress the delete suggestion
+        elif (it["channel"] or "").strip() in trusted:   # trusted channel → suppress the delete suggestion
             trust_protected += 1         # (video stays ingested + rated; just no prune entry)
         else:                            # B/C/D relevant, untrusted → prune lane (ISC-29)
             prune_entries.append({
