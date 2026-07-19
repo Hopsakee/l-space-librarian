@@ -119,6 +119,7 @@ def _parse_ndjson(stdout: str) -> list[dict]:
             "title": d.get("title") or "",
             "channel": d.get("channel") or d.get("uploader") or "",
             "description": d.get("description") or "",
+            "upload_date": d.get("upload_date") or "",
             "url": f"https://www.youtube.com/watch?v={vid}",
         })
     return items
@@ -383,6 +384,16 @@ def _md_cell(text: str) -> str:
     return (text or "").replace("|", "\\|").replace("\n", " ").strip()
 
 
+def _format_published(upload_date: str) -> str:
+    """Format yt-dlp's `upload_date` (YYYYMMDD) as sortable YYYY-MM-DD.
+    Missing/malformed input (livestreams, some Shorts omit it) never crashes
+    the batch — falls back to '?' so the prune note still renders."""
+    d = (upload_date or "").strip()
+    if len(d) == 8 and d.isdigit():
+        return f"{d[0:4]}-{d[4:6]}-{d[6:8]}"
+    return "?"
+
+
 def write_prune_note(entries: list[dict], prune_dir: Path, date: str) -> Path:
     """Write the 'safe to delete from Watch Later' note (relevant but B-or-lower).
 
@@ -400,13 +411,13 @@ def write_prune_note(entries: list[dict], prune_dir: Path, date: str) -> Path:
         ">",
         "> **This list never deletes anything — you delete them yourself in YouTube.**",
         "",
-        "| Tier | Title | Channel | URL | Why |",
-        "|------|-------|---------|-----|-----|",
+        "| Tier | Title | Published | Channel | URL | Why |",
+        "|------|-------|-----------|---------|-----|-----|",
     ]
     for e in entries:
         lines.append(
-            f"| {e['tier']} | {_md_cell(e['title'])} | {_md_cell(e['channel'])} "
-            f"| {e['url']} | {_md_cell(e['reason'])} |"
+            f"| {e['tier']} | {_md_cell(e['title'])} | {_md_cell(e['published'])} "
+            f"| {_md_cell(e['channel'])} | {e['url']} | {_md_cell(e['reason'])} |"
         )
     lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -520,6 +531,7 @@ def main(
         else:                          # B/C/D relevant → prune lane (ISC-29)
             prune_entries.append({
                 "tier": tier, "title": it["title"], "channel": it["channel"],
+                "published": _format_published(it.get("upload_date", "")),
                 "url": it["url"], "reason": _quality_reason(res.get("quality", {}), reason),
             })
 
