@@ -35,6 +35,7 @@ from fastcore.script import call_parse
 
 from consume_selection.db import connect, init_schema
 from consume_selection.ingest import _INGEST_COLS
+from consume_selection.mismatch import ensure_wl_mismatch, trusted_channels
 from readwise_tools.infer import extract_json, run_inference
 from readwise_tools.prompt_sync import load_prompt
 from readwise_tools.rate_document import rate_text
@@ -486,8 +487,15 @@ def main(
             print(f"prompt_error=1 ({type(exc).__name__}: {str(exc)[:120]})",
                   file=sys.stderr)
 
+    # Channels Jelle has contradicted on >= TRUST_THRESHOLD distinct videos are TRUSTED:
+    # their videos are suppressed from the prune lane (still ingested + rated, just never
+    # suggested for deletion). ensure_wl_mismatch is idempotent; trusted_channels calls it too.
+    ensure_wl_mismatch(conn)
+    trusted = trusted_channels(conn)
+
     read = len(items)
     relevant = ingested = rated = sa = no_transcript = rate_failed = failed = 0
+    trust_protected = 0
     prune_entries: list[dict] = []
 
     for it in items:
@@ -536,7 +544,9 @@ def main(
         rated += 1
         if tier in ("S", "A"):
             sa += 1                    # recommendable via _READING_ADVICE (already ingested + rated)
-        else:                          # B/C/D relevant → prune lane (ISC-29)
+        elif (it["channel"] or "").strip() in trusted:   # trusted channel → suppress the delete suggestion
+            trust_protected += 1         # (video stays ingested + rated; just no prune entry)
+        else:                            # B/C/D relevant, untrusted → prune lane (ISC-29)
             prune_entries.append({
                 "tier": tier, "title": it["title"], "channel": it["channel"],
                 "published": _format_published(it.get("upload_date", "")),
@@ -556,12 +566,14 @@ def main(
     eligible_n = len(eligible)
     counts = {"read": read, "relevant": relevant, "ingested": ingested,
               "rated": rated, "sa": sa, "pruned": pruned,
+              "trust_protected": trust_protected,
               "no_transcript": no_transcript, "rate_failed": rate_failed,
               "failed": failed, "playlist_total": seen_total, "eligible": eligible_n,
               "dry_run": dry_run, "ytdlp_rc": rc,
               "prune_note": str(prune_path) if prune_path else ""}
     print(f"read={read} relevant={relevant} ingested={ingested} rated={rated} "
-          f"sa={sa} pruned={pruned} no_transcript={no_transcript} "
+          f"sa={sa} pruned={pruned} trust_protected={trust_protected} "
+          f"no_transcript={no_transcript} "
           f"rate_failed={rate_failed} failed={failed} "
           f"playlist_total={seen_total} eligible={eligible_n}")
     if prune_path:
