@@ -58,8 +58,16 @@ class SentenceTransformersEmbedder(Embedder):
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError:
+            # The `embed` extra was removed 2026-09-02 (see pyproject) because a
+            # declared extra must resolve even where it is never installed, which
+            # broke every other CLI on an offline machine. So the install is
+            # explicit and at the point of use, and this message must name the
+            # command that exists rather than the one that used to.
             raise SystemExit(
-                "sentence-transformers not installed. Run: uv sync --extra embed"
+                "sentence-transformers is not installed, and it is deliberately not a\n"
+                "declared dependency (it pulls torch, ~2-3GB).\n"
+                "  networked machine:  uv run --with sentence-transformers cs-embed ...\n"
+                "  preferred instead:  CONSUME_EMBED_BACKEND=ollama  (pure HTTP, no torch)"
             )
         self._m = SentenceTransformer(model_name)
         self._is_e5 = "e5" in model_name.lower()  # e5 wants query:/passage: prefixes
@@ -151,7 +159,21 @@ def embed_items(conn, embedder: Embedder, rebuild: bool = False, limit: int = 0)
 def match(conn, embedder: Embedder, query: str, k: int = 10) -> list[dict]:
     """Embed the query, cosine-rank items embedded with the same model."""
     ensure_embedding_columns(conn)  # cs-match before any cs-embed run else 'no such column: embedding_model'
-    import numpy as np
+    # numpy is used for cosine ranking by BOTH backends, so this path needs it
+    # even when embeddings came from Ollama. It is not a declared dependency for
+    # the same reason sentence-transformers is not (see pyproject): the only
+    # numpy wheel available offline requires Python >=3.12, and declaring it
+    # would force that floor on the whole project. Kept a lazy import with a
+    # message that names a command that works.
+    try:
+        import numpy as np
+    except ImportError:
+        raise SystemExit(
+            "numpy is not installed. It is needed for cosine ranking but is not a\n"
+            "declared dependency — install it at the point of use:\n"
+            "  uv run --with numpy cs-match ...\n"
+            "(numpy IS present in the Hoggle container's approved wheel store.)"
+        )
     qv = np.array(embedder.embed([query], kind="query")[0], dtype="float32")
     qn = qv / (np.linalg.norm(qv) + 1e-9)
     rows = conn.execute(

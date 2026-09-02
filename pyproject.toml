@@ -25,13 +25,40 @@ cs-toread = "consume_selection.toread:main"
 cs-podcasts = "consume_selection.podcasts:main"
 cs-hopswiki = "consume_selection.hopswiki:main"
 
-[project.optional-dependencies]
-# Local in-process embeddings (sentence-transformers backend). Heavy (pulls torch);
-# kept optional so the core CLIs install light. Enable with: uv sync --extra embed
-embed = [
-    "sentence-transformers>=3.0",
-    "numpy>=1.26",
-]
+# NO `[project.optional-dependencies]`. [REMOVED 2026-09-02]
+#
+# There used to be an `embed` extra here declaring `sentence-transformers>=3.0`
+# and `numpy>=1.26`, for the in-process embedding backend. It is gone, and the
+# reason is a uv behaviour that is easy to be caught by:
+#
+#   **uv builds a UNIVERSAL lock that must resolve every declared extra, even
+#   one you never install.** So on a machine that resolves offline against a
+#   fixed wheel store, an extra whose dependencies are absent makes the WHOLE
+#   project unresolvable — every `cs-*` command, not just the embedding one.
+#   `uv run --no-extra embed` does not help: that flag governs the sync, not
+#   the lock.
+#
+# That is exactly the state of the Mac Mini's Hoggle container, which installs
+# with `no-index` + `find-links=/opt/wheels` and has no `sentence-transformers`
+# (it pulls torch, ~2-3 GB, gated only on sys_platform=='linux'). Measured
+# 2026-09-02: with this block present, all five `cs-*` entry points fail to
+# resolve; with it removed and nothing else changed, all five run.
+#
+# NOTHING IS LOST BY REMOVING IT, and that is why this is the fix rather than a
+# workaround. The comment that used to sit below this block already said so:
+# the preferred embedding path is the **Ollama backend**
+# (`CONSUME_EMBED_BACKEND=ollama`) — pure HTTP, no torch, no wheels at all —
+# and the extra was only the in-process fallback. `numpy` also remains
+# available wherever it is actually wanted; it is in the container's approved
+# store and imports fine under `uv run`.
+#
+# If the in-process backend is ever needed again, install its dependencies
+# explicitly at the point of use rather than re-declaring an extra:
+#
+#     uv run --with sentence-transformers cs-embed          # networked machines
+#
+# which keeps them out of the lock and therefore out of every other machine's
+# resolution.
 
 [build-system]
 requires = ["hatchling"]
@@ -46,10 +73,11 @@ packages = ["consume_selection"]
 [tool.uv.sources]
 readwise-tools = { path = "../readwise-tools", editable = true }
 
-# NOTE on the `embed` extra: `sentence-transformers` pulls `torch`, which on Linux
-# drags in ~3GB of nvidia/CUDA wheels (gated only on sys_platform=='linux'). On a
-# disk-tight machine install CPU-only torch FIRST, e.g.:
+# NOTE on embeddings, kept because the guidance outlived the extra it described:
+# `sentence-transformers` pulls `torch`, which on Linux drags in ~3GB of
+# nvidia/CUDA wheels (gated only on sys_platform=='linux'). The preferred
+# embedding path is the Ollama backend (CONSUME_EMBED_BACKEND=ollama) — pure
+# HTTP, NO torch at all. Use that on the MacMini. If you genuinely need the
+# in-process backend on a networked machine, install CPU-only torch first:
 #   uv pip install torch --index-url https://download.pytorch.org/whl/cpu
-# then `uv sync --extra embed`. BUT the preferred embedding path is the Ollama
-# backend (CONSUME_EMBED_BACKEND=ollama) — pure HTTP, NO torch at all. Use that on
-# the MacMini; the `embed` extra is only the in-process fallback.
+#   uv run --with sentence-transformers cs-embed
