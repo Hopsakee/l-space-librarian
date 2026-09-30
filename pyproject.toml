@@ -68,10 +68,10 @@ build-backend = "hatchling.build"
 packages = ["consume_selection"]
 
 # Reuse the existing Readwise CLI/client rather than reinventing API access.
-# Local path dependency for now; swap to the public git repo
-# (Hopsakee/readwise-tools) for portability — same pattern as _TOLIBRARY_PODCAST.
+# Fetched from its public repo, so a plain `uv sync` works on any machine
+# without a sibling checkout.
 [tool.uv.sources]
-readwise-tools = { path = "../readwise-tools", editable = true }
+readwise-tools = { git = "https://github.com/Hopsakee/readwise-tools", branch = "main" }
 
 # NOTE on embeddings, kept because the guidance outlived the extra it described:
 # `sentence-transformers` pulls `torch`, which on Linux drags in ~3GB of
