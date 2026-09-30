@@ -7,7 +7,7 @@ Pratchett's Discworld.)
 
 It ingests two firehoses into one index:
 
-- **Readwise Reader** articles (via a sibling `readwise-tools` package)
+- **Readwise Reader** articles (via the `readwise-tools` package)
 - **YouTube Watch Later** (via `yt-dlp` + browser cookies) — read by relevance to
   your current focus, content-rated from the transcript, so the good ones surface
   and the low-value ones can be pruned.
@@ -22,8 +22,9 @@ cd ~/Code/l-space-librarian
 uv sync
 ```
 
-Readwise access is reused from a sibling `readwise-tools` package (a uv path
-dependency); its API token is resolved at runtime and never stored in this repo.
+Readwise access is reused from the `readwise-tools` package, which uv fetches from
+its public GitHub repo (no sibling checkout needed); its API token is resolved at
+runtime and never stored in this repo.
 
 ## Commands
 
