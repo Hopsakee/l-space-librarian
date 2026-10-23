@@ -1,0 +1,20 @@
+# Runs on the Mac Mini in OrbStack, next to the Hoggle box (decided 2026-10-23).
+#
+#   TS_IP=$(tailscale ip -4) docker compose -f consume_web/compose.yaml up -d --build
+#
+# The port is published on the Mac's Tailscale address only: no login, the
+# tailnet is the login. Never change it to 0.0.0.0, which would open it to
+# everyone on the home network.
+services:
+  consume-web:
+    build:
+      context: ..
+      dockerfile: consume_web/Dockerfile
+    container_name: consume-web
+    restart: unless-stopped
+    ports:
+      - "${TS_IP:?set TS_IP to the Mac's Tailscale address: tailscale ip -4}:8765:8000"
+    volumes:
+      # The folder, not the file: SQLite in WAL mode writes -wal and -shm files next to it.
+      # The box sees the same folder as ~/data/l-space-librarian.
+      - ${HOME}/HoggleBox/home/data/l-space-librarian:/data
