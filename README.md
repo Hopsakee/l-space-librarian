@@ -36,6 +36,21 @@ cs-fts --rebuild                     # (re)build the FTS5 index for BM25 search
 cs-watchlater --browser <b> --limit N  # triage YouTube Watch Later into `items`
 ```
 
+## The consume list
+
+`consume_items` holds what Jelle has committed to read, watch or listen to:
+one row per item, with its quarters, stage, status, his own rating and why
+it was dropped. It sits next to `items` and `ratings` so the model's tier and
+his verdict are one join apart. Logic: `consume_selection/consume_list.py`.
+
+```bash
+python -m consume_selection.consume_import --dry-run   # one-time move from Braincave notes
+uv run consume_web/app.py                              # the web page, on 127.0.0.1:8765
+```
+
+`consume_web/` runs as its own container on the Mac Mini, published on its
+Tailscale address only; see `consume_web/compose.yaml`.
+
 `l-space.db` defaults to `~/code_data/l-space-librarian/l-space.db`; override with
 `--db PATH` or the `CONSUME_DB` env var.
 

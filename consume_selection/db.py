@@ -26,6 +26,8 @@ from pathlib import Path
 
 from fastcore.script import call_parse
 
+from .consume_list import init_consume_schema
+
 DEFAULT_DB = Path.home() / "code_data" / "l-space-librarian" / "l-space.db"
 
 # --- schema -----------------------------------------------------------------
@@ -153,6 +155,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     for ddl in INDEXES_DDL:
         conn.execute(ddl)
     conn.commit()
+    init_consume_schema(conn)
 
 
 @call_parse
