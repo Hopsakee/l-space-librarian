@@ -233,7 +233,9 @@ def index(q: str = "", m: str = "listen", show: str = "open"):
         w = cl.wip(conn)
         stale = cl.stale_open(conn, q, m) if show == "open" and q == now else []
 
-    wip_txt = f"Open: {w['open']} · grens {w['cap']} ({w['done_in_window']} klaar in 90 dagen)"
+    wip_txt = (f"Open: {w['open']} ({w['this_quarter']} dit kwartaal, "
+               f"{w['open'] - w['this_quarter']} uit eerdere) · grens {w['cap']} "
+               f"({w['done_in_window']} klaar in 90 dagen)")
     if w["over_cap"]:
         wip_txt += " — eerst iets afmaken of laten vallen"
     body = [
