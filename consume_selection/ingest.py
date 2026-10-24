@@ -7,7 +7,9 @@ deterministic for tests).
 Idempotency contract (ISC-6/ISC-10): re-ingest UPSERTs only the ingest-owned
 columns. Enrichment columns written by later slices — quality_auto, quality_self,
 topic_tags, embedding, consumed, consumed_at — are NEVER touched here, so
-re-ingesting never clobbers an embedding or a score.
+re-ingesting never clobbers an embedding or a score. One exception: a podcast in
+Readwise is one Jelle has heard, so its row carries consumed=1 like the other
+adapters' read-state (librarything, toread).
 
 Anti (ISC-7): this module imports nothing from recall.it / Hopswiki and makes no
 such calls. It only reads Readwise and writes the local consume.db.
@@ -63,29 +65,27 @@ def _row_from_doc(doc: dict, now: str) -> dict:
         "location": doc.get("location"),
         "added_at": doc.get("created_at"),
         "ingested_at": now,
+        # Read-state, written only for podcasts (see upsert_items).
+        "consumed": 1,
+        "consumed_at": doc.get("created_at"),
     }
 
 
 def upsert_items(conn, docs: list[dict]) -> tuple[int, int]:
     """Insert new items, refresh ingest-owned fields on existing ones.
 
-    Returns (rows_seen, rows_new). Enrichment columns are never written here.
+    Returns (rows_seen, rows_new). Enrichment columns are never written here; a
+    podcast also writes its read-state, because being in Readwise means heard.
     """
     now = datetime.now(timezone.utc).isoformat()
     before = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
-    all_cols = ["id"] + _INGEST_COLS
-    placeholders = ", ".join(["?"] * len(all_cols))
-    update_set = ", ".join(f"{c}=excluded.{c}" for c in _INGEST_COLS)
-    sql = (
-        f"INSERT INTO items ({', '.join(all_cols)}) VALUES ({placeholders}) "
-        f"ON CONFLICT(id) DO UPDATE SET {update_set}"
-    )
     seen = 0
     for doc in docs:
         if not doc.get("id"):
             continue
         row = _row_from_doc(doc, now)
-        conn.execute(sql, [row[c] for c in all_cols])
+        heard = row["item_type"] == "podcast"
+        upsert_row(conn, row, extra_cols=("consumed", "consumed_at") if heard else ())
         seen += 1
     conn.commit()
     after = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
