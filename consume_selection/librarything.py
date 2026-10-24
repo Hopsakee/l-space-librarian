@@ -45,6 +45,7 @@ from pathlib import Path
 
 from fastcore.script import call_parse
 
+from consume_selection.consume_list import WORDS_PER_PAGE
 from consume_selection.db import connect, init_schema
 from consume_selection.ingest import upsert_row
 
@@ -85,8 +86,7 @@ def star_tier(rating) -> str | None:
 
 
 # Words-per-page heuristic for a book's word_count (used by the depth rules'
-# BOOK_CLASS >20k-word test; a rough estimate is fine, never displayed as fact).
-WORDS_PER_PAGE = 275
+# BOOK_CLASS >20k-word test, and turned back into pages by `item_media`).
 
 RATER = "ik"  # Jelle's OWN judgment — the ground-truth rater
 

@@ -26,13 +26,17 @@ Read-only against the filesystem (ISC-40): reads file paths, writes only consume
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import re
+import zipfile
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastcore.script import call_parse
 
+from consume_selection.consume_list import WORDS_PER_PAGE
 from consume_selection.db import connect, db_path, init_schema
 from consume_selection.ingest import upsert_row
 
@@ -124,6 +128,56 @@ def build_summary(rel: Path, title: str) -> str:
     return f"ToRead document: {title}."
 
 
+# A page-tree node: `<< ... /Type /Pages ... /Count N ... >>`, in either order.
+_PAGES_RE = re.compile(rb"<<(?:(?!>>).)*?/Type\s*/Pages\b(?:(?!>>).)*?>>", re.S)
+_COUNT_RE = re.compile(rb"/Count\s+(\d+)")
+_OBJSTM_RE = re.compile(rb"/Type\s*/ObjStm\b.*?stream\r?\n", re.S)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def pdf_pages(path: Path) -> int | None:
+    """Page count without a PDF library: the root of the page tree holds the
+    total as /Count, and it is the largest one. Page-tree nodes may sit inside
+    compressed object streams (PDF 1.5+), so those are searched too."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    chunks = [data]
+    for m in _OBJSTM_RE.finditer(data):
+        end = data.find(b"endstream", m.end())
+        try:
+            chunks.append(zlib.decompressobj().decompress(data[m.end():end]))
+        except zlib.error:
+            continue
+    counts = [int(c) for chunk in chunks for node in _PAGES_RE.findall(chunk)
+              for c in _COUNT_RE.findall(node)]
+    return max(counts, default=0) or None
+
+
+def text_words(path: Path) -> int | None:
+    """Words in an EPUB (its XHTML files) or a markdown/HTML file."""
+    try:
+        if path.suffix.lower() == ".epub":
+            with zipfile.ZipFile(path) as z:
+                text = " ".join(z.read(n).decode("utf-8", "ignore") for n in z.namelist()
+                                if n.lower().endswith((".xhtml", ".html", ".htm")))
+        else:
+            text = path.read_text("utf-8", "ignore")
+    except (OSError, zipfile.BadZipFile):
+        return None
+    return len(html.unescape(_TAG_RE.sub(" ", text)).split()) or None
+
+
+def word_count(path: Path) -> int | None:
+    """Length as words, the catalogue's one length column. A PDF's pages are
+    stored as pages x WORDS_PER_PAGE, as LibraryThing does for books."""
+    if path.suffix.lower() == ".pdf":
+        pages = pdf_pages(path)
+        return pages * WORDS_PER_PAGE if pages else None
+    return text_words(path)
+
+
 def row_from_file(rel: Path, root: Path) -> dict:
     title = clean_title(rel)
     return {
@@ -136,7 +190,7 @@ def row_from_file(rel: Path, root: Path) -> dict:
         "site_name": "toread",
         "summary": build_summary(rel, title),
         "item_type": rel.suffix.lower().lstrip("."),  # pdf|epub|md|html
-        "word_count": None,
+        "word_count": word_count(root / rel),
         "location": str(root / rel),  # absolute path (ISC-9)
         "added_at": None,
         "ingested_at": _now(),

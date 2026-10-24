@@ -108,7 +108,7 @@ def _row(conn, **kw):
 
 def test_import_maps_a_note(conn):
     r = _row(conn)
-    assert (r["title"], r["media_type"], r["stage"], r["status"]) == ("Some essay", "read", "consume", "todo")
+    assert (r["title"], r["media_type"], r["stage"], r["status"]) == ("Some essay", "article", "consume", "todo")
     assert json.loads(r["quarters"]) == ["2026-Q2", "2026-Q3"]
     assert r["reader_url"] == "https://read.readwise.io/read/01abc" and r["url"] is None
     assert (r["rang"], r["my_rating"]) == (2, "B")
