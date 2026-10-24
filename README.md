@@ -49,7 +49,7 @@ uv run consume_web/app.py                              # the web page, on 127.0.
 ```
 
 `consume_web/` runs as its own container on the Mac Mini, published on its
-Tailscale address only; see `consume_web/compose.yaml`.
+Tailscale address only; see `consume_web/README.md` for running and checking it.
 
 `l-space.db` defaults to `~/code_data/l-space-librarian/l-space.db`; override with
 `--db PATH` or the `CONSUME_DB` env var.
