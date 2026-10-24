@@ -66,10 +66,29 @@ def _row_from_doc(doc: dict, now: str) -> dict:
     }
 
 
+def mark_listened_podcasts(conn) -> int:
+    """A podcast in Readwise is one Jelle has listened to (Jelle, 2026-10-24: "When
+    a podcast is in Readwise, I already listened to it"). Mark it consumed, and the
+    same episode from the OPML feeds too, matched by title, so the advice never
+    offers it as new. Only ever sets consumed=1. Returns the rows changed."""
+    n = conn.execute(
+        "UPDATE items SET consumed = 1, consumed_at = COALESCE(consumed_at, added_at) "
+        "WHERE source = 'readwise' AND item_type = 'podcast' AND consumed = 0").rowcount
+    n += conn.execute(
+        "UPDATE items SET consumed = 1, consumed_at = ("
+        "  SELECT min(r.added_at) FROM items r WHERE r.source = 'readwise' "
+        "  AND r.item_type = 'podcast' AND lower(trim(r.title)) = lower(trim(items.title))) "
+        "WHERE source = 'podcast-opml' AND consumed = 0 AND lower(trim(title)) IN ("
+        "  SELECT lower(trim(title)) FROM items WHERE source = 'readwise' AND item_type = 'podcast')"
+    ).rowcount
+    return n
+
+
 def upsert_items(conn, docs: list[dict]) -> tuple[int, int]:
     """Insert new items, refresh ingest-owned fields on existing ones.
 
-    Returns (rows_seen, rows_new). Enrichment columns are never written here.
+    Returns (rows_seen, rows_new). Enrichment columns are never written here,
+    except `consumed` on podcasts: see `mark_listened_podcasts`.
     """
     now = datetime.now(timezone.utc).isoformat()
     before = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
@@ -87,6 +106,7 @@ def upsert_items(conn, docs: list[dict]) -> tuple[int, int]:
         row = _row_from_doc(doc, now)
         conn.execute(sql, [row[c] for c in all_cols])
         seen += 1
+    mark_listened_podcasts(conn)
     conn.commit()
     after = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
     return seen, after - before

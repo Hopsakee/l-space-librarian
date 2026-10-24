@@ -40,7 +40,7 @@ from urllib.parse import urlparse
 from fastcore.script import call_parse
 
 from consume_selection.db import connect, init_schema
-from consume_selection.ingest import upsert_row
+from consume_selection.ingest import mark_listened_podcasts, upsert_row
 
 # --- constants --------------------------------------------------------------
 
@@ -216,6 +216,7 @@ def main(
                 episodes += 1
 
     if not dry_run:
+        mark_listened_podcasts(conn)  # an episode Jelle already has in Readwise
         conn.commit()
     after = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
     total_pod = conn.execute(

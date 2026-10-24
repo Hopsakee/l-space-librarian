@@ -201,8 +201,11 @@ def card(r, back: str, stale: str | None = None):
                 Button(s, name="stage", value=s, cls="on" if r["stage"] == s else "")
                 for s in cl.STAGES]), cls="row"),
             _post(iid, "drop", back,
-                  Select(*[Option(c, value=c) for c in cl.DROP_CODES], name="code",
-                         aria_label="reden"),
+                  # No reason chosen beforehand: a drop must be a decision, not a
+                  # mis-tap on the button with the first reason already filled in.
+                  Select(Option("kies een reden…", value="", selected=True, disabled=True),
+                         *[Option(c, value=c) for c in cl.DROP_CODES], name="code",
+                         aria_label="reden", required=True),
                   Input(name="text", placeholder="toelichting (mag leeg)"),
                   Button("Laten vallen"))]
     if r["media_type"] == "listen":
