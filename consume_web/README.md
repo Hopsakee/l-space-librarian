@@ -9,16 +9,26 @@ the list is a filter against hoarding, and items arrive through the
 ## Run it on the Mac Mini
 
 ```bash
-TS_IP=$(tailscale ip -4) docker compose -f consume_web/compose.yaml up -d --build
+docker compose -f consume_web/compose.yaml up -d --build
+tailscale serve --bg 8765
 ```
 
-Open `http://<tailscale-ip>:8765` on a device with Tailscale on. There is no login:
-the port is published on the Tailscale address only, so the tailnet is the login.
-Writes refuse a request whose `Origin`/`Referer` is not the page itself.
+The container listens on the Mac's loopback (`127.0.0.1:8765`) only.
+`tailscale serve` puts HTTPS in front of it on the tailnet: open
+`https://mac-mini-van-jelle.taila9d9bf.ts.net` on a device with Tailscale on.
+There is no login, so the tailnet is the login. Writes refuse a request whose
+`Origin`/`Referer` is not the page itself.
 
-After a reboot, the container can only bind that address once Tailscale is up on
-the Mac. If `docker ps` shows `consume-web` not running, start it again with the
-command above.
+`tailscale serve` needs "HTTPS Certificates" switched on once in the Tailscale
+admin console (DNS page). The certificate is public in Certificate Transparency
+logs, so the machine and tailnet names are public; the machine is still only
+reachable from the tailnet (decided 2026-10-24). `--bg` keeps the setting
+across reboots; `tailscale serve status` shows it and `tailscale serve reset`
+removes it.
+
+**On the phone:** open the address in Safari, then Share → "Zet op beginscherm".
+It opens as its own app, without the browser bar. There is no offline mode: every
+tap writes to the database.
 
 ## Two writers, one database
 

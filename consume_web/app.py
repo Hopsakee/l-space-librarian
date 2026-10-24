@@ -27,9 +27,10 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from fasthtml.common import (A, Article, Beforeware, Button, Details, Div, FastHTML, Form, H1, H2,
-                             Header, Input, Main, Meta, Nav, Option, P, RedirectResponse, Response,
-                             Script, Select, Small, Span, Style, Summary, Title, serve)
+from fasthtml.common import (A, Article, Beforeware, Button, Details, Div, FastHTML, FileResponse,
+                             Form, H1, H2, Header, Input, JSONResponse, Link, Main, Meta, Nav, Option,
+                             P, RedirectResponse, Response, Script, Select, Small, Span, Style,
+                             Summary, Title, serve)
 
 from consume_selection import consume_list as cl
 from consume_selection.db import connect, db_path, init_schema
@@ -69,8 +70,8 @@ h2.section { font-size:1.1rem; margin:2rem 0 .2rem; }
 .empty { color:var(--soft); }
 """
 
-# Copy without the Clipboard API: that API needs HTTPS or localhost, and this
-# page is served over plain HTTP on the tailnet. execCommand still works there.
+# Copy without the Clipboard API: that API needs HTTPS or localhost, and the
+# page is also opened over plain HTTP when developing. execCommand works on both.
 JS = """
 function cp(b){const i=b.previousElementSibling;i.focus();i.select();i.setSelectionRange(0,9999);
 let ok=false;try{ok=document.execCommand('copy')}catch(e){}
@@ -84,7 +85,10 @@ def same_origin(req, sess=None):
     to this address and change the list."""
     if req.method != "POST":
         return None
-    host = req.headers.get("host", "")
+    # Behind `tailscale serve` the browser's host may arrive as X-Forwarded-Host.
+    # Only the proxy can set it: the container listens on 127.0.0.1, and a form
+    # posted by another site cannot add headers.
+    host = req.headers.get("x-forwarded-host") or req.headers.get("host", "")
     src = req.headers.get("origin") or req.headers.get("referer") or ""
     if not host or urlsplit(src).netloc != host:
         return Response("Geweigerd: verzoek kwam niet van deze pagina.", status_code=403)
@@ -94,7 +98,34 @@ def same_origin(req, sess=None):
 app = FastHTML(default_hdrs=False, canonical=False, secret_key=secrets.token_hex(16),
                before=Beforeware(same_origin),
                hdrs=(Meta(name="viewport", content="width=device-width, initial-scale=1"),
+                     # Home-screen app: own icon, opens without the browser bar.
+                     Link(rel="manifest", href="/manifest.webmanifest"),
+                     Link(rel="apple-touch-icon", href="/icon-180.png"),
+                     Meta(name="apple-mobile-web-app-capable", content="yes"),
+                     Meta(name="mobile-web-app-capable", content="yes"),
+                     Meta(name="apple-mobile-web-app-title", content="Consume"),
+                     Meta(name="theme-color", content="#ffffff"),
                      Style(CSS), Script(JS)))
+
+ICONS = Path(__file__).resolve().parent / "icons"
+MANIFEST = {
+    "name": "Consumelijst", "short_name": "Consume", "lang": "nl",
+    "start_url": "/", "scope": "/", "display": "standalone",
+    "background_color": "#ffffff", "theme_color": "#ffffff",
+    "icons": [{"src": f"/icon-{n}.png", "sizes": f"{n}x{n}", "type": "image/png"} for n in (180, 512)],
+}
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    return JSONResponse(MANIFEST, media_type="application/manifest+json")
+
+
+@app.get("/icon-{size}.png")
+def icon(size: int):
+    if size not in (180, 512):
+        return Response(status_code=404)
+    return FileResponse(ICONS / f"icon-{size}.png", media_type="image/png")
 
 
 def db() -> sqlite3.Connection:

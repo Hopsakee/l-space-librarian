@@ -10,6 +10,7 @@ WORKDIR /app
 # Only what the app imports: the consume list and the schema.
 COPY consume_selection/__init__.py consume_selection/db.py consume_selection/consume_list.py consume_selection/
 COPY consume_web/app.py consume_web/
+COPY consume_web/icons/icon-180.png consume_web/icons/icon-512.png consume_web/icons/
 
 ENV HOST=0.0.0.0 PORT=8000 CONSUME_DB=/data/l-space.db
 EXPOSE 8000
