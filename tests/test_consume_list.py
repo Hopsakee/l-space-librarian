@@ -1,4 +1,5 @@
 """The consume list's writes, and the import's mapping from note frontmatter."""
+import datetime
 import json
 import sqlite3
 
@@ -71,6 +72,14 @@ def test_snipd_link_must_be_snipd(conn):
 def test_wip_cap_has_a_floor(conn):
     w = cl.wip(conn)
     assert (w["open"], w["cap"], w["over_cap"]) == (1, cl.WIP_MIN_CAP, False)
+
+
+def test_wip_splits_this_quarter_from_earlier(conn):
+    today = datetime.date(2026, 10, 24)
+    assert cl.wip(conn, today)["this_quarter"] == 0
+    cl.carry(conn, 1, "2026-Q4")
+    w = cl.wip(conn, today)
+    assert (w["open"], w["this_quarter"]) == (1, 1)
 
 
 def test_shift_quarter_crosses_years():

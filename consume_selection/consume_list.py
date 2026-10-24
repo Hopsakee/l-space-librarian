@@ -147,7 +147,8 @@ def stale_open(conn, quarter: str, media: str) -> list[sqlite3.Row]:
 
 
 def wip(conn, today: _dt.date | None = None) -> dict:
-    """Open items against the cap. A signal, not a gate."""
+    """Open items against the cap. A signal, not a gate. The cap counts every
+    open item; `this_quarter` says how many of them are on the current one."""
     today = today or _dt.date.today()
     cutoff = (today - _dt.timedelta(days=WIP_WINDOW_DAYS)).isoformat()
     n_open = conn.execute(
@@ -155,8 +156,12 @@ def wip(conn, today: _dt.date | None = None) -> dict:
     done = conn.execute(
         "SELECT count(*) FROM consume_items WHERE status = 'done' AND date_finished >= ?",
         (cutoff,)).fetchone()[0]
+    on_q = conn.execute(
+        f"SELECT count(*) FROM consume_items WHERE status IN ('todo','doing') AND {_IN_QUARTER}",
+        {"q": current_quarter(today)}).fetchone()[0]
     cap = max(2 * done, WIP_MIN_CAP)
-    return {"open": n_open, "cap": cap, "done_in_window": done, "over_cap": n_open > cap}
+    return {"open": n_open, "this_quarter": on_q, "cap": cap, "done_in_window": done,
+            "over_cap": n_open > cap}
 
 
 def get(conn, iid: int) -> sqlite3.Row | None:
