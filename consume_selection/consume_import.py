@@ -27,8 +27,8 @@ SKIP_DIRS = {".obsidian", ".trash", ".git", "node_modules", ".stversions"}
 QUARTER_RE = re.compile(r"(\d{4}-Q[1-4])")
 
 # Readwise's export writes `type` as its own category name.
-TYPE_TO_MEDIA = {"podcasts": "listen", "articles": "read", "books": "read",
-                 "tweets": "read", "supplementals": "read"}
+TYPE_TO_MEDIA = {"podcasts": "listen", "articles": "article", "books": "book",
+                 "tweets": "article", "supplementals": "article"}
 
 _FM_RE = re.compile(r"^---\r?\n(.*?)\r?\n---", re.S)
 _KV_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):\s*(.*)$")
@@ -87,11 +87,13 @@ def quarters_of(fm: dict) -> list[str]:
 
 def media_of(fm: dict, links: dict) -> str | None:
     m = _s(fm.get("media-type")).lower()
+    by_type = TYPE_TO_MEDIA.get(_s(fm.get("type")).lower())
+    if m == "read":  # the vault had one reading medium; a Readwise book is a book
+        return by_type if by_type in ("book", "article") else "article"
     if m in MEDIA:
         return m
-    m = TYPE_TO_MEDIA.get(_s(fm.get("type")).lower())
-    if m:
-        return m
+    if by_type:
+        return by_type
     if "youtube" in (links.get("url") or "") or _s(fm.get("source")) == "youtube":
         return "watch"
     return None

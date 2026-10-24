@@ -4,7 +4,13 @@ The consume list as a web page for phone, Boox and Mac. It reads and writes
 `consume_items` in `l-space.db`. The logic lives in
 `consume_selection/consume_list.py`. Adding items is not possible here, on purpose:
 the list is a filter against hoarding, and items arrive through the
-`_CONSUME_LIST` skill.
+`_CONSUME_LIST` skill. The one exception is books, which Jelle picks himself: the
+Boeken tab searches his LibraryThing and ToRead books and adds one.
+
+Four tabs: Boeken, Artikelen, Kijken, Luisteren. A book is read in sessions and
+has a bookmark (`p. 30 / 145 · 21%`); books count against their own limit of 5,
+not the item limit. Which catalogue item is a book is decided by the `item_media`
+view: LibraryThing, a ToRead EPUB, or a ToRead PDF over 25 pages.
 
 ## Run it on the Mac Mini
 

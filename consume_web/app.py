@@ -29,13 +29,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fasthtml.common import (A, Article, Beforeware, Button, Details, Div, FastHTML, FileResponse,
                              Form, H1, H2, Header, Input, JSONResponse, Link, Main, Meta, Nav, Option,
-                             P, RedirectResponse, Response, Script, Select, Small, Span, Style,
+                             P, Progress, RedirectResponse, Response, Script, Select, Small, Span, Style,
                              Summary, Title, serve)
 
 from consume_selection import consume_list as cl
 from consume_selection.db import connect, db_path, init_schema
 
-MEDIA_LABEL = {"read": "Lezen", "watch": "Kijken", "listen": "Luisteren"}
+MEDIA_LABEL = {"book": "Boeken", "article": "Artikelen", "watch": "Kijken", "listen": "Luisteren"}
 STATUS_LABEL = {"todo": "Te doen", "doing": "Bezig", "done": "Klaar"}
 SHOW_LABEL = {"open": "Open", "done": "Klaar", "dropped": "Gevallen"}
 
@@ -67,6 +67,12 @@ details form { display:grid; gap:.5rem; margin-top:.4rem; }
 select, textarea { min-height:44px; font:inherit; border:2px solid var(--line); border-radius:6px;
   background:var(--bg); color:var(--fg); padding:0 .5rem; }
 h2.section { font-size:1.1rem; margin:2rem 0 .2rem; }
+.page input { width:6rem; min-height:44px; font:inherit; padding:0 .5rem;
+  border:2px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
+progress { width:100%; height:.6rem; accent-color:var(--fg); }
+.find { display:flex; gap:.4rem; margin:.6rem 0; }
+.find input { flex:1; min-width:0; min-height:44px; font:inherit; padding:0 .5rem;
+  border:2px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
 .empty { color:var(--soft); }
 """
 
@@ -217,6 +223,8 @@ def card(r, back: str, stale: str | None = None):
                                                            value="todo")), cls="row"))
         return Article(*parts, id=f"i{iid}")
     else:
+        if r["media_type"] == "book":
+            parts += book_progress(r, back)
         parts.append(Div(_post(iid, "status", back, *[
             Button(lbl, name="status", value=s, cls="on" if r["status"] == s else "")
             for s, lbl in STATUS_LABEL.items()]), cls="row"))
@@ -239,6 +247,12 @@ def card(r, back: str, stale: str | None = None):
                          aria_label="reden", required=True),
                   Input(name="text", placeholder="toelichting (mag leeg)"),
                   Button("Laten vallen"))]
+    if r["media_type"] == "book":
+        more.append(_post(iid, "pages", back,
+                          Input(name="pages", type="number", inputmode="numeric", min="1",
+                                value=r["pages_total"] or "", placeholder="aantal pagina's",
+                                aria_label="aantal pagina's"),
+                          Button("Pagina's bewaren")))
     if r["media_type"] == "listen":
         more.append(_post(iid, "snipd", back,
                           Input(name="url", value=r["snipd_url"] or "",
@@ -248,6 +262,43 @@ def card(r, back: str, stale: str | None = None):
     return Article(*parts, id=f"i{iid}")
 
 
+def book_progress(r, back: str) -> list:
+    """Where he is in a book, and one field to move the bookmark."""
+    iid, page, total = r["id"], r["page_current"] or 0, r["pages_total"]
+    if total:
+        txt = f"p. {page} / {total} · {round(100 * page / total)}%"
+        out = [P(txt, cls="meta"), Progress(value=str(page), max=str(total))]
+    else:
+        out = [P(f"p. {page}" + (" · aantal pagina's onbekend (zie Meer)"), cls="meta")]
+    out.append(Div(_post(iid, "page", back,
+                         Input(name="page", type="number", inputmode="numeric", min="0",
+                               max=str(total) if total else None, value=str(page),
+                               aria_label="pagina"),
+                         Button("Bladwijzer"), cls="page"), cls="row"))
+    return out
+
+
+def find_books(zoek: str, results, q: str) -> list:
+    """Add a book he owns. Only books: the list is a filter against hoarding,
+    and books are the one thing he picks himself (decided 2026-10-24)."""
+    out = [H2("Boek toevoegen", cls="section"),
+           Form(Input(name="zoek", value=zoek, placeholder="titel of auteur", type="search",
+                      aria_label="zoek een boek"),
+                Input(type="hidden", name="m", value="book"),
+                Button("Zoek"), method="get", action="/", cls="find")]
+    if zoek and not results:
+        out.append(P("Geen boek gevonden in LibraryThing of ToRead.", cls="meta"))
+    for b in results:
+        bits = [b["author"], "LibraryThing" if b["source"] == "librarything" else "ToRead",
+                f"{b['pages']} p." if b["pages"] else None, "gelezen" if b["consumed"] else None]
+        out.append(Article(Header(H2(b["title"])), P(" · ".join(x for x in bits if x), cls="meta"),
+                           Form(Input(type="hidden", name="item_id", value=b["id"]),
+                                Input(type="hidden", name="q", value=q),
+                                Button(f"Op de lijst voor {q}"),
+                                method="post", action="/book/add")))
+    return out
+
+
 # --- pages -----------------------------------------------------------------
 
 def _qs(**kw) -> str:
@@ -255,7 +306,7 @@ def _qs(**kw) -> str:
 
 
 @app.get("/")
-def index(q: str = "", m: str = "listen", show: str = "open"):
+def index(q: str = "", m: str = "listen", show: str = "open", zoek: str = ""):
     now = cl.current_quarter()
     q = q if len(q) == 7 and q[4:6] == "-Q" else now
     m = m if m in cl.MEDIA else "listen"
@@ -266,6 +317,7 @@ def index(q: str = "", m: str = "listen", show: str = "open"):
         n = cl.counts(conn, q, show)
         w = cl.wip(conn)
         stale = cl.stale_open(conn, q, m) if show == "open" and q == now else []
+        found = cl.search_books(conn, zoek) if m == "book" and zoek.strip() else []
 
     wip_txt = (f"Open: {w['open']} ({w['this_quarter']} dit kwartaal, "
                f"{w['open'] - w['this_quarter']} uit eerdere) · grens {w['cap']} "
@@ -283,11 +335,18 @@ def index(q: str = "", m: str = "listen", show: str = "open"):
         Nav(*[A(lbl, href="/?" + _qs(q=q, m=m, show=k), cls="on" if k == show else "")
               for k, lbl in SHOW_LABEL.items()]),
     ]
+    if m == "book":
+        over = w["books_over_cap"]
+        body.append(P(f"Boeken open: {w['books_open']} · grens {w['book_cap']}"
+                      + (" — eerst een boek afmaken of laten vallen" if over else ""),
+                      cls="wip over" if over else "wip"))
     body += [card(r, back) for r in items] or [P("Niets hier.", cls="empty")]
     if stale:
         body.append(H2(f"Open uit eerdere kwartalen ({len(stale)})", cls="section"))
         body.append(P("Meenemen naar dit kwartaal, of laten vallen.", cls="meta"))
         body += [card(r, back, stale=q) for r in stale]
+    if m == "book" and show == "open":
+        body += find_books(zoek, found, q)
     return Title(f"Consumelijst {q}"), Main(*body)
 
 
@@ -329,6 +388,27 @@ def post_rating(iid: int, tier: str = "", back: str = ""):
 @app.post("/item/{iid}/drop")
 def post_drop(iid: int, code: str, text: str = "", back: str = ""):
     return _apply(iid, back, cl.drop, code, text)
+
+
+@app.post("/item/{iid}/page")
+def post_page(iid: int, page: int, back: str = ""):
+    return _apply(iid, back, cl.set_page, page)
+
+
+@app.post("/item/{iid}/pages")
+def post_pages(iid: int, pages: str = "", back: str = ""):
+    return _apply(iid, back, cl.set_pages_total, int(pages) if pages.strip().isdigit() else None)
+
+
+@app.post("/book/add")
+def post_add_book(item_id: str, q: str = ""):
+    q = q if len(q) == 7 and q[4:6] == "-Q" else cl.current_quarter()
+    try:
+        with closing(db()) as conn:
+            iid = cl.add_book(conn, item_id, q)
+    except ValueError as e:
+        return Response(f"Niet opgeslagen: {e}", status_code=400)
+    return RedirectResponse(f"/?{_qs(q=q, m='book')}#i{iid}", status_code=303)
 
 
 @app.post("/item/{iid}/carry")
