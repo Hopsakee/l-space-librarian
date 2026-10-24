@@ -1,23 +1,17 @@
-"""A podcast in Readwise counts as listened, and so does the same feed episode."""
-import sqlite3
-
+"""A podcast in Readwise counts as heard, and so does the same feed episode."""
 import pytest
 
-from consume_selection.db import init_schema
-from consume_selection.ingest import mark_listened_podcasts, upsert_items
+from consume_selection.ingest import upsert_items
+from consume_selection.podcasts import mark_heard_in_readwise
 
 
 @pytest.fixture
-def conn():
-    c = sqlite3.connect(":memory:")
-    c.row_factory = sqlite3.Row
-    init_schema(c)
+def conn(db):
     rows = [("pod-1", "podcast-opml", "Ep. 9 with Simon", "podcast", "2026-05-01"),
-            ("pod-2", "podcast-opml", "An episode not heard", "podcast", "2026-05-02"),
-            ("art-1", "readwise", "An article", "article", "2026-05-03")]
-    c.executemany("INSERT INTO items (id, source, title, item_type, added_at, ingested_at) "
-                  "VALUES (?,?,?,?,?, 'x')", rows)
-    return c
+            ("pod-2", "podcast-opml", "An episode not heard", "podcast", "2026-05-02")]
+    db.executemany("INSERT INTO items (id, source, title, item_type, added_at, ingested_at) "
+                   "VALUES (?,?,?,?,?, 'x')", rows)
+    return db
 
 
 def consumed(conn):
@@ -25,18 +19,28 @@ def consumed(conn):
             for r in conn.execute("SELECT id, consumed, consumed_at FROM items")}
 
 
-def test_readwise_podcast_marks_itself_and_the_feed_episode(conn):
-    upsert_items(conn, [{"id": "rw-1", "title": " ep. 9 WITH Simon", "category": "podcast",
-                         "created_at": "2026-05-05"}])
+DOCS = [{"id": "rw-1", "title": " ep. 9 WITH Simon", "category": "podcast", "created_at": "2026-05-05"},
+        {"id": "rw-2", "title": "An article", "category": "article", "created_at": "2026-05-06"}]
+
+
+def test_readwise_ingest_marks_podcasts_only(conn):
+    upsert_items(conn, DOCS)
     c = consumed(conn)
     assert c["rw-1"] == (1, "2026-05-05")
+    assert c["rw-2"] == (0, None)
+
+
+def test_article_keeps_its_read_state_on_reingest(conn):
+    upsert_items(conn, DOCS)
+    conn.execute("UPDATE items SET consumed = 1, consumed_at = 'x' WHERE id = 'rw-2'")
+    upsert_items(conn, DOCS)
+    assert consumed(conn)["rw-2"] == (1, "x")
+
+
+def test_feed_episode_in_readwise_is_heard_once(conn):
+    upsert_items(conn, DOCS)
+    assert mark_heard_in_readwise(conn) == 1
+    c = consumed(conn)
     assert c["pod-1"] == (1, "2026-05-05")
-    assert c["pod-2"][0] == 0 and c["art-1"][0] == 0
-
-
-def test_never_unmarks_and_is_idempotent(conn):
-    conn.execute("UPDATE items SET consumed = 1, consumed_at = 'x' WHERE id = 'pod-2'")
-    upsert_items(conn, [{"id": "rw-1", "title": "Ep. 9 with Simon", "category": "podcast",
-                         "created_at": "2026-05-05"}])
-    assert mark_listened_podcasts(conn) == 0
-    assert consumed(conn)["pod-2"] == (1, "x")
+    assert c["pod-2"][0] == 0
+    assert mark_heard_in_readwise(conn) == 0

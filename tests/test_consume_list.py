@@ -1,20 +1,16 @@
 """The consume list's writes, and the import's mapping from note frontmatter."""
 import datetime
 import json
-import sqlite3
 
 import pytest
 
 from consume_selection import consume_list as cl
 from consume_selection.consume_import import parse_frontmatter, row_from_note
-from consume_selection.db import init_schema
 
 
 @pytest.fixture
-def conn():
-    c = sqlite3.connect(":memory:")
-    c.row_factory = sqlite3.Row
-    init_schema(c)
+def conn(db):
+    c = db
     c.execute("INSERT INTO consume_items (title, media_type, quarters, updated_at) "
               "VALUES ('A talk', 'listen', '[\"2026-Q3\"]', 'x')")
     c.commit()

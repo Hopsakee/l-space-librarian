@@ -40,7 +40,7 @@ from urllib.parse import urlparse
 from fastcore.script import call_parse
 
 from consume_selection.db import connect, init_schema
-from consume_selection.ingest import mark_listened_podcasts, upsert_row
+from consume_selection.ingest import upsert_row
 
 # --- constants --------------------------------------------------------------
 
@@ -182,6 +182,18 @@ def upsert_episode(conn, ep: dict) -> None:
     upsert_row(conn, row, extra_cols=("duration_minutes",))
 
 
+def mark_heard_in_readwise(conn) -> int:
+    """An episode that is also in Readwise (same title) has been heard: mark it
+    consumed, dated when it reached Readwise. Only ever sets consumed=1.
+    Returns the rows changed."""
+    return conn.execute(
+        "UPDATE items SET consumed = 1, consumed_at = r.at "
+        "FROM (SELECT lower(trim(title)) AS k, min(added_at) AS at FROM items "
+        "      WHERE source = 'readwise' AND item_type = 'podcast' GROUP BY k) AS r "
+        "WHERE items.source = 'podcast-opml' AND items.consumed = 0 "
+        "AND lower(trim(items.title)) = r.k").rowcount
+
+
 # --- CLI --------------------------------------------------------------------
 
 @call_parse
@@ -215,8 +227,9 @@ def main(
                     upsert_episode(conn, ep)
                 episodes += 1
 
+    heard = 0
     if not dry_run:
-        mark_listened_podcasts(conn)  # an episode Jelle already has in Readwise
+        heard = mark_heard_in_readwise(conn)
         conn.commit()
     after = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
     total_pod = conn.execute(
@@ -228,7 +241,7 @@ def main(
 
     print(f"podcasts opml={path.name} feeds={len(feeds)} skipped_junk={skipped} "
           f"ok_feeds={ok_feeds} failed_feeds={failed_feeds} episodes={episodes} "
-          f"new_rows={after - before} dry_run={dry_run}")
+          f"new_rows={after - before} heard_in_readwise={heard} dry_run={dry_run}")
     print(f"podcast rows now {total_pod} ({with_dur} with duration)")
     if not dry_run:
         print("reminder: run `cs-fts --rebuild` so BM25 sees the new episodes")
