@@ -83,3 +83,42 @@ def test_epub_words(tmp_path):
         z.writestr("ch1.xhtml", "<html><body><p>een twee drie</p></body></html>")
         z.writestr("style.css", "p { color: red }")
     assert text_words(p) == 3
+
+
+# --- work reading ----------------------------------------------------------
+
+def test_work_needs_a_deadline_and_runs_on_it(conn):
+    import sqlite3
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("INSERT INTO consume_items (title, media_type, updated_at) "
+                     "VALUES ('x', 'work', 'x')")
+    with pytest.raises(ValueError):
+        cl.add_work(conn, "Nota", "volgende week")
+    with pytest.raises(ValueError):
+        cl.add_work(conn, "Nota", "2026-10-30", url="javascript:alert(1)")
+    a = cl.add_work(conn, "", "2026-10-20", item_id="tr-long")      # from ToRead: title, pages
+    b = cl.add_work(conn, "Beleidsnota", "2026-10-28", pages=40, url="https://example.org/n")
+    row = cl.get(conn, a)
+    assert (row["title"], row["pages_total"], row["deadline"]) == ("Title tr-long", 26, "2026-10-20")
+    assert [r["id"] for r in cl.list_items(conn, "1999-Q1", "work")] == [a, b]  # no quarter
+    w = cl.wip(conn, __import__("datetime").date(2026, 10, 24))
+    assert (w["work_late"], w["work_soon"], w["open"]) == (1, 1, 0)
+    cl.set_deadline(conn, a, "2026-11-03")
+    cl.set_page(conn, a, 5)
+    assert (cl.get(conn, a)["deadline"], cl.get(conn, a)["status"]) == ("2026-11-03", "doing")
+    assert cl.stale_open(conn, "2026-Q4", "work") == []
+
+
+def test_old_table_gains_work_and_deadline(conn):
+    old = (cl.CONSUME_ITEMS_DDL.replace(",'work'", "")
+           .replace("    deadline         TEXT,               -- work: the day it must be read (YYYY-MM-DD)\n", "")
+           .replace(",\n    CHECK (media_type <> 'work' OR deadline IS NOT NULL)", ""))
+    conn.execute("DROP TABLE consume_items")
+    conn.execute(old)
+    conn.execute("INSERT INTO consume_items (title, media_type, page_current, updated_at) "
+                 "VALUES ('A book', 'book', 12, 'x')")
+    cl.init_consume_schema(conn)
+    cl.add_work(conn, "Nota", "2026-10-30")
+    assert [(r["title"], r["media_type"], r["page_current"]) for r in
+            conn.execute("SELECT * FROM consume_items ORDER BY id")] == \
+        [("A book", "book", 12), ("Nota", "work", None)]

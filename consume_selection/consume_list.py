@@ -3,6 +3,7 @@
 Reading is two media since 2026-10-24: a `book` takes days or weeks and is read
 in sessions, with its pages tracked; an `article` (also a document or a
 Braincave note) is one sitting. `item_media` decides which a catalogue item is.
+`work` is reading his job requires: added by hand only, always with a deadline.
 
 Everything else in l-space.db is the firehose (what was collected and how the
 models rated it). `consume_items` is the commitment layer on top of it: the
@@ -23,7 +24,9 @@ import datetime as _dt
 import json
 import sqlite3
 
-MEDIA = ("book", "article", "watch", "listen")
+MEDIA = ("book", "article", "watch", "listen", "work")
+# Media he reads in sessions, with a bookmark: pages_total / page_current.
+PAGED = ("book", "work")
 STAGES = ("skim", "consume", "highlight", "visualise")
 STATUSES = ("todo", "doing", "done", "dropped")
 TIERS = ("S", "A", "B", "C", "D")
@@ -47,6 +50,8 @@ DROP_CODES = (
 WIP_WINDOW_DAYS = 90
 WIP_MIN_CAP = 10
 BOOK_CAP = 5
+# Work reading has no cap: it is an obligation, and its deadline is the control.
+WORK_SOON_DAYS = 7  # "deze week" in the warning line
 
 # A ToRead PDF longer than this is a book; shorter is a document (an article).
 # Pages are stored as word_count = pages x WORDS_PER_PAGE, as LibraryThing does.
@@ -59,7 +64,7 @@ CREATE TABLE IF NOT EXISTS consume_items (
     item_id          TEXT REFERENCES items(id),   -- the catalogue row, when there is one
     title            TEXT NOT NULL,
     author           TEXT,
-    media_type       TEXT NOT NULL CHECK (media_type IN ('book','article','watch','listen')),
+    media_type       TEXT NOT NULL CHECK (media_type IN ('book','article','watch','listen','work')),
     source           TEXT,               -- youtube | readwise | podcast | boek | hoggle | ...
     -- where to open it; any of these may be empty
     url              TEXT,               -- the original: YouTube, article, episode page
@@ -88,7 +93,9 @@ CREATE TABLE IF NOT EXISTS consume_items (
     note_path        TEXT UNIQUE,        -- the Braincave note it was imported from
     pages_total      INTEGER,            -- books: from the catalogue, editable
     page_current     INTEGER,            -- books: the page he is on
-    updated_at       TEXT NOT NULL
+    deadline         TEXT,               -- work: the day it must be read (YYYY-MM-DD)
+    updated_at       TEXT NOT NULL,
+    CHECK (media_type <> 'work' OR deadline IS NOT NULL)
 );
 """
 
@@ -119,27 +126,29 @@ def init_consume_schema(conn: sqlite3.Connection) -> None:
     conn.execute("DROP VIEW IF EXISTS item_media")  # recreated, so a rule change lands
     conn.execute(ITEM_MEDIA_DDL)
     conn.execute(CONSUME_ITEMS_DDL)
-    _split_read(conn)
+    _rebuild_if_old(conn)
     for ddl in CONSUME_INDEXES_DDL:
         conn.execute(ddl)
     conn.commit()
 
 
-def _split_read(conn: sqlite3.Connection) -> None:
-    """One-time migration of a table made before 2026-10-24, when reading was one
-    medium, `read`. SQLite cannot change a CHECK in place, so the table is rebuilt
-    and each `read` row becomes a book or an article by `item_media`; a row with
-    no catalogue item is an article unless it was imported as source `boek`."""
+def _rebuild_if_old(conn: sqlite3.Connection) -> None:
+    """Bring a table made by an earlier version up to CONSUME_ITEMS_DDL. SQLite
+    cannot change a CHECK in place, so the table is rebuilt and the rows copied.
+    Rows from before 2026-10-24, when reading was one medium `read`, become a
+    book or an article by `item_media`; a row with no catalogue item is an
+    article unless it was imported as source `boek`."""
     ddl = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'consume_items'").fetchone()[0]
-    if "'book'" in ddl:
+    if all(f"'{m}'" in ddl for m in MEDIA) and "deadline" in ddl:
         return
     old_cols = [r[1] for r in conn.execute("PRAGMA table_info(consume_items)")]
     book = ("(o.source = 'boek' OR (SELECT media FROM item_media m "
             "WHERE m.item_id = o.item_id) = 'book')")
     new = {"media_type": f"CASE WHEN o.media_type <> 'read' THEN o.media_type "
-                         f"WHEN {book} THEN 'book' ELSE 'article' END",
-           "pages_total": "(SELECT pages FROM item_media m WHERE m.item_id = o.item_id "
-                          "AND m.media = 'book')"}
+                         f"WHEN {book} THEN 'book' ELSE 'article' END"}
+    if "pages_total" not in old_cols:
+        new["pages_total"] = ("(SELECT pages FROM item_media m WHERE m.item_id = o.item_id "
+                              "AND m.media = 'book')")
     cols = old_cols + [c for c in new if c not in old_cols]
     select = ", ".join(new.get(c, f"o.{c}") for c in cols)
     conn.commit()
@@ -178,9 +187,13 @@ _ORDER = "ORDER BY rang IS NULL, rang, date_added, id"
 
 
 def list_items(conn, quarter: str, media: str, show: str = "open") -> list[sqlite3.Row]:
-    """The items of one quarter and one medium. `show` is open | done | dropped."""
+    """The items of one quarter and one medium. `show` is open | done | dropped.
+    Work reading has a deadline instead of a quarter: all of it, soonest first."""
     statuses = {"open": ("todo", "doing"), "done": ("done",), "dropped": ("dropped",)}[show]
     marks = ",".join("?" * len(statuses))
+    if media == "work":
+        return conn.execute(f"SELECT * FROM consume_items WHERE media_type = 'work' "
+                            f"AND status IN ({marks}) ORDER BY deadline, id", statuses).fetchall()
     sql = (f"SELECT * FROM consume_items WHERE media_type = ? AND status IN ({marks}) "
            f"AND EXISTS (SELECT 1 FROM json_each(quarters) WHERE value = ?) {_ORDER}")
     return conn.execute(sql, (media, *statuses, quarter)).fetchall()
@@ -196,12 +209,16 @@ def counts(conn, quarter: str, show: str = "open") -> dict[str, int]:
         (*statuses, quarter)).fetchall()
     out = dict.fromkeys(MEDIA, 0)
     out.update({m: n for m, n in rows})
+    out["work"] = conn.execute(f"SELECT count(*) FROM consume_items WHERE media_type = 'work' "
+                               f"AND status IN ({marks})", statuses).fetchone()[0]
     return out
 
 
 def stale_open(conn, quarter: str, media: str) -> list[sqlite3.Row]:
     """Open items NOT on this quarter: never carried over, or never given one.
-    Each needs a decision, carry it or drop it."""
+    Each needs a decision, carry it or drop it. Work reading has no quarter."""
+    if media == "work":
+        return []
     return conn.execute(
         f"SELECT * FROM consume_items WHERE media_type = :m AND status IN ('todo','doing') "
         f"AND NOT {_IN_QUARTER} {_ORDER}", {"m": media, "q": quarter}).fetchall()
@@ -209,23 +226,31 @@ def stale_open(conn, quarter: str, media: str) -> list[sqlite3.Row]:
 
 def wip(conn, today: _dt.date | None = None) -> dict:
     """Open items against the cap. A signal, not a gate. The cap counts every
-    open item except books; `this_quarter` says how many are on the current
-    quarter. Books are counted against their own BOOK_CAP."""
+    open item except books and work; `this_quarter` says how many are on the
+    current quarter. Books are counted against their own BOOK_CAP; work reading
+    by its deadlines (`work_late`, `work_soon`)."""
     today = today or _dt.date.today()
     cutoff = (today - _dt.timedelta(days=WIP_WINDOW_DAYS)).isoformat()
-    open_ = "status IN ('todo','doing') AND media_type <> 'book'"
+    capped = "media_type NOT IN ('book','work')"
+    open_ = f"status IN ('todo','doing') AND {capped}"
     n_open = conn.execute(f"SELECT count(*) FROM consume_items WHERE {open_}").fetchone()[0]
     done = conn.execute(
-        "SELECT count(*) FROM consume_items WHERE status = 'done' AND media_type <> 'book' "
+        f"SELECT count(*) FROM consume_items WHERE status = 'done' AND {capped} "
         "AND date_finished >= ?", (cutoff,)).fetchone()[0]
     on_q = conn.execute(f"SELECT count(*) FROM consume_items WHERE {open_} AND {_IN_QUARTER}",
                         {"q": current_quarter(today)}).fetchone()[0]
     books = conn.execute("SELECT count(*) FROM consume_items WHERE media_type = 'book' "
                          "AND status IN ('todo','doing')").fetchone()[0]
+    soon = (today + _dt.timedelta(days=WORK_SOON_DAYS)).isoformat()
+    late, due_soon = conn.execute(
+        "SELECT count(*) FILTER (WHERE deadline < :t), "
+        "       count(*) FILTER (WHERE deadline >= :t AND deadline <= :s) "
+        "FROM consume_items WHERE media_type = 'work' AND status IN ('todo','doing')",
+        {"t": today.isoformat(), "s": soon}).fetchone()
     cap = max(2 * done, WIP_MIN_CAP)
     return {"open": n_open, "this_quarter": on_q, "cap": cap, "done_in_window": done,
             "over_cap": n_open > cap, "books_open": books, "book_cap": BOOK_CAP,
-            "books_over_cap": books > BOOK_CAP}
+            "books_over_cap": books > BOOK_CAP, "work_late": late, "work_soon": due_soon}
 
 
 def get(conn, iid: int) -> sqlite3.Row | None:
@@ -300,8 +325,8 @@ def set_snipd_url(conn, iid: int, url: str) -> None:
 def set_page(conn, iid: int, page: int) -> None:
     """The page he is on. Starting a book moves it from todo to doing."""
     row = get(conn, iid)
-    if row is None or row["media_type"] != "book":
-        raise ValueError(f"no book {iid}")
+    if row is None or row["media_type"] not in PAGED:
+        raise ValueError(f"no book or work document {iid}")
     if page < 0 or (row["pages_total"] and page > row["pages_total"]):
         raise ValueError(f"pagina {page} ligt buiten 0–{row['pages_total']}")
     cols = {"page_current": page}
@@ -355,3 +380,57 @@ def add_book(conn, item_id: str, quarter: str) -> int:
          item["pages"], _today(), _now()))
     conn.commit()
     return cur.lastrowid
+
+
+# --- work reading ----------------------------------------------------------
+# What his job needs him to read, by a date (Jelle, 2026-10-24). Added by hand
+# only, never recommended; no cap, the deadline is the control.
+
+def _date(value: str) -> str:
+    try:
+        return _dt.date.fromisoformat(value.strip()).isoformat()
+    except ValueError:
+        raise ValueError(f"geen geldige datum: {value!r}") from None
+
+
+def toread_files(conn) -> list[sqlite3.Row]:
+    """The files in ToRead now, to pick a work document from."""
+    return conn.execute(
+        "SELECT i.id, i.title, m.pages FROM items i JOIN item_media m ON m.item_id = i.id "
+        "WHERE i.source = 'toread' AND i.location NOT LIKE 'GONE:%' ORDER BY i.title").fetchall()
+
+
+def add_work(conn, title: str, deadline: str, pages: int | None = None, url: str = "",
+             item_id: str = "", quarter: str | None = None) -> int:
+    """A work document, typed in or picked from ToRead (which fills the title,
+    the file and the pages when left empty)."""
+    item = None
+    if item_id:
+        item = conn.execute("SELECT i.*, m.pages FROM items i JOIN item_media m "
+                            "ON m.item_id = i.id WHERE i.id = ? AND i.source = 'toread'",
+                            (item_id,)).fetchone()
+        if item is None:
+            raise ValueError(f"geen ToRead-bestand {item_id}")
+    title = title.strip() or (item["title"] if item else "")
+    if not title:
+        raise ValueError("titel ontbreekt")
+    if pages is not None and pages < 1:
+        raise ValueError("aantal pagina's moet minstens 1 zijn")
+    if url.strip() and not url.strip().startswith(("https://", "http://")):
+        raise ValueError("een link begint met https://")
+    cur = conn.execute(
+        "INSERT INTO consume_items (item_id, title, media_type, source, url, file_name, status, "
+        "quarters, pages_total, deadline, date_added, updated_at) "
+        "VALUES (?, ?, 'work', 'werk', ?, ?, 'todo', ?, ?, ?, ?, ?)",
+        (item["id"] if item else None, title, url.strip() or None,
+         item["location"] if item else None, json.dumps([quarter or current_quarter()]),
+         pages or (item["pages"] if item else None), _date(deadline), _today(), _now()))
+    conn.commit()
+    return cur.lastrowid
+
+
+def set_deadline(conn, iid: int, deadline: str) -> None:
+    row = get(conn, iid)
+    if row is None or row["media_type"] != "work":
+        raise ValueError(f"geen werkdocument {iid}")
+    _update(conn, iid, deadline=_date(deadline))
