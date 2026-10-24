@@ -7,7 +7,11 @@ the list is a filter against hoarding, and items arrive through the
 `_CONSUME_LIST` skill. The one exception is books, which Jelle picks himself: the
 Boeken tab searches his LibraryThing and ToRead books and adds one.
 
-Four tabs: Boeken, Artikelen, Kijken, Luisteren. A book is read in sessions and
+Five tabs: Boeken, Artikelen, Kijken, Luisteren, Werk. **Werk** is reading his job
+needs, by a deadline: added by hand here only (typed in, or a ToRead file), with
+a bookmark like a book, and three ways out: Klaar, Deadline verzetten, Laten
+vallen. Every tab shows how many work documents are late or due within a week.
+No cap: the deadline is the control. Of the other four: A book is read in sessions and
 has a bookmark (`p. 30 / 145 · 21%`); books count against their own limit of 5,
 not the item limit. Which catalogue item is a book is decided by the `item_media`
 view: LibraryThing, a ToRead EPUB, or a ToRead PDF over 25 pages.

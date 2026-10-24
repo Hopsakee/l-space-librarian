@@ -16,6 +16,7 @@ fast, high-contrast page, and the page works with no internet beyond the tailnet
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import os
 import secrets
@@ -28,14 +29,17 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fasthtml.common import (A, Article, Beforeware, Button, Details, Div, FastHTML, FileResponse,
-                             Form, H1, H2, Header, Input, JSONResponse, Link, Main, Meta, Nav, Option,
+                             Form, H1, H2, Header, Input, JSONResponse, Label, Link, Main, Meta, Nav, Option,
                              P, Progress, RedirectResponse, Response, Script, Select, Small, Span, Style,
                              Summary, Title, serve)
 
 from consume_selection import consume_list as cl
 from consume_selection.db import connect, db_path, init_schema
 
-MEDIA_LABEL = {"book": "Boeken", "article": "Artikelen", "watch": "Kijken", "listen": "Luisteren"}
+MEDIA_LABEL = {"book": "Boeken", "article": "Artikelen", "watch": "Kijken", "listen": "Luisteren",
+               "work": "Werk"}
+DAYS = ("ma", "di", "wo", "do", "vr", "za", "zo")
+MONTHS = ("jan", "feb", "mrt", "apr", "mei", "jun", "jul", "aug", "sep", "okt", "nov", "dec")
 STATUS_LABEL = {"todo": "Te doen", "doing": "Bezig", "done": "Klaar"}
 SHOW_LABEL = {"open": "Open", "done": "Klaar", "dropped": "Gevallen"}
 
@@ -53,6 +57,8 @@ nav a, button, .btn { display:inline-flex; align-items:center; min-height:44px; 
 nav a.on, button.on { background:var(--fg); color:var(--on-fg); font-weight:700; }
 .wip { color:var(--soft); margin:0; }
 .wip.over { color:var(--fg); font-weight:700; }
+.wip a { color:inherit; }
+.late { font-weight:700; }
 article { border:2px solid var(--line); border-radius:8px; padding:.75rem; margin:.9rem 0; }
 article h2 { font-size:1.1rem; margin:0 0 .3rem; overflow-wrap:anywhere; }
 .meta, .landing { color:var(--soft); margin:.2rem 0; font-size:.95rem; }
@@ -63,7 +69,13 @@ article h2 { font-size:1.1rem; margin:0 0 .3rem; overflow-wrap:anywhere; }
   border:2px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
 details { margin-top:.4rem; }
 summary { cursor:pointer; min-height:44px; display:flex; align-items:center; font-size:1rem; text-decoration:underline; }
-details form { display:grid; gap:.5rem; margin-top:.4rem; }
+details form, form.addwork { display:grid; gap:.5rem; margin-top:.4rem; }
+form.addwork > *, form.addwork select { width:100%; min-width:0; }
+form.addwork label { display:grid; gap:.2rem; color:var(--soft); }
+form.addwork input { min-height:44px; font:inherit; padding:0 .5rem; border:2px solid var(--line);
+  border-radius:6px; background:var(--bg); color:var(--fg); }
+input[type=date] { min-height:44px; font:inherit; padding:0 .5rem; border:2px solid var(--line);
+  border-radius:6px; background:var(--bg); color:var(--fg); }
 select, textarea { min-height:44px; font:inherit; border:2px solid var(--line); border-radius:6px;
   background:var(--bg); color:var(--fg); padding:0 .5rem; }
 h2.section { font-size:1.1rem; margin:2rem 0 .2rem; }
@@ -223,23 +235,32 @@ def card(r, back: str, stale: str | None = None):
                                                            value="todo")), cls="row"))
         return Article(*parts, id=f"i{iid}")
     else:
-        if r["media_type"] == "book":
+        if r["media_type"] == "work":
+            parts.append(deadline_line(r))
+        if r["media_type"] in cl.PAGED:
             parts += book_progress(r, back)
         parts.append(Div(_post(iid, "status", back, *[
             Button(lbl, name="status", value=s, cls="on" if r["status"] == s else "")
             for s, lbl in STATUS_LABEL.items()]), cls="row"))
 
-    if not stale:
+    work = r["media_type"] == "work"
+    if not stale and not work:  # his verdict tunes the rating prompts; work isn't rated
         parts.append(Div(Span("Mijn oordeel", cls="meta"), _post(iid, "rating", back, *[
             Button(t, name="tier", value="" if r["my_rating"] == t else t,
                    cls="on" if r["my_rating"] == t else "",
                    aria_pressed=str(r["my_rating"] == t).lower())
             for t in cl.TIERS]), cls="row"))
     # Depth changes rarely, so it sits under "Meer" with the drop form.
-    more = [Div(Span("Diepte", cls="meta"), _post(iid, "stage", back, *[
+    more = [] if work else [Div(Span("Diepte", cls="meta"), _post(iid, "stage", back, *[
                 Button(s, name="stage", value=s, cls="on" if r["stage"] == s else "")
-                for s in cl.STAGES]), cls="row"),
-            _post(iid, "drop", back,
+                for s in cl.STAGES]), cls="row")]
+    if work and r["status"] != "done":
+        # Done, a new deadline, or off the list: the three ways out of a deadline.
+        parts.append(Div(_post(iid, "deadline", back,
+                               Input(name="deadline", type="date", value=r["deadline"] or "",
+                                     aria_label="nieuwe deadline", required=True),
+                               Button("Deadline verzetten")), cls="row"))
+    more += [_post(iid, "drop", back,
                   # No reason chosen beforehand: a drop must be a decision, not a
                   # mis-tap on the button with the first reason already filled in.
                   Select(Option("kies een reden…", value="", selected=True, disabled=True),
@@ -247,7 +268,7 @@ def card(r, back: str, stale: str | None = None):
                          aria_label="reden", required=True),
                   Input(name="text", placeholder="toelichting (mag leeg)"),
                   Button("Laten vallen"))]
-    if r["media_type"] == "book":
+    if r["media_type"] in cl.PAGED:
         more.append(_post(iid, "pages", back,
                           Input(name="pages", type="number", inputmode="numeric", min="1",
                                 value=r["pages_total"] or "", placeholder="aantal pagina's",
@@ -260,6 +281,49 @@ def card(r, back: str, stale: str | None = None):
                           Button("Snipd-link bewaren")))
     parts.append(Details(Summary("Meer"), *more))
     return Article(*parts, id=f"i{iid}")
+
+
+def nl_date(iso: str) -> str:
+    d = _dt.date.fromisoformat(iso)
+    return f"{DAYS[d.weekday()]} {d.day} {MONTHS[d.month - 1]}"
+
+
+def deadline_line(r):
+    days = (_dt.date.fromisoformat(r["deadline"]) - _dt.date.today()).days
+    if r["status"] == "done":
+        return P(f"Deadline was {nl_date(r['deadline'])}", cls="meta")
+    if days < 0:
+        return P(f"Te laat sinds {nl_date(r['deadline'])} — klaar, verzetten of laten vallen",
+                 cls="late")
+    when = {0: "vandaag", 1: "morgen"}.get(days, f"over {days} dagen")
+    return P(f"Deadline {nl_date(r['deadline'])} ({when})", cls="late" if days <= 1 else "meta")
+
+
+def work_warning(w):
+    """On every tab, so a deadline is never out of sight."""
+    bits = ([f"{w['work_late']} te laat"] if w["work_late"] else []) + \
+           ([f"{w['work_soon']} deze week"] if w["work_soon"] else [])
+    if not bits:
+        return None
+    return P(A(f"Werk: {' · '.join(bits)}", href="/?m=work"),
+             cls="wip over" if w["work_late"] else "wip")
+
+
+def add_work_form(files) -> list:
+    """Work reading is added by hand only (decided 2026-10-24), always with a deadline."""
+    pick = Select(Option("— of kies een bestand uit ToRead —", value=""),
+                  *[Option(f"{f['title']}" + (f" ({f['pages']} p.)" if f["pages"] else ""),
+                           value=f["id"]) for f in files],
+                  name="item_id", aria_label="bestand uit ToRead")
+    return [H2("Werkdocument toevoegen", cls="section"),
+            Form(Input(name="title", placeholder="titel (leeg = naam van het bestand)",
+                       aria_label="titel"),
+                 pick,
+                 Label("Deadline", Input(name="deadline", type="date", required=True)),
+                 Input(name="pages", type="number", inputmode="numeric", min="1",
+                       placeholder="aantal pagina's (mag leeg)", aria_label="aantal pagina's"),
+                 Input(name="url", type="url", placeholder="link (mag leeg)", aria_label="link"),
+                 Button("Toevoegen"), method="post", action="/work/add", cls="addwork")]
 
 
 def book_progress(r, back: str) -> list:
@@ -318,6 +382,7 @@ def index(q: str = "", m: str = "listen", show: str = "open", zoek: str = ""):
         w = cl.wip(conn)
         stale = cl.stale_open(conn, q, m) if show == "open" and q == now else []
         found = cl.search_books(conn, zoek) if m == "book" and zoek.strip() else []
+        files = cl.toread_files(conn) if m == "work" and show == "open" else []
 
     wip_txt = (f"Open: {w['open']} ({w['this_quarter']} dit kwartaal, "
                f"{w['open'] - w['this_quarter']} uit eerdere) · grens {w['cap']} "
@@ -327,7 +392,9 @@ def index(q: str = "", m: str = "listen", show: str = "open", zoek: str = ""):
     body = [
         Header(H1(f"Consumelijst {q}"),
                P(wip_txt, cls="wip over" if w["over_cap"] else "wip"),
-               Nav(A(f"← {cl.shift_quarter(q, -1)}", href="/?" + _qs(q=cl.shift_quarter(q, -1), m=m, show=show)),
+               work_warning(w) if m != "work" else None,
+               # Work reading runs on deadlines, not quarters.
+               None if m == "work" else Nav(A(f"← {cl.shift_quarter(q, -1)}", href="/?" + _qs(q=cl.shift_quarter(q, -1), m=m, show=show)),
                    *([A("nu", href="/?" + _qs(m=m, show=show))] if q != now else []),
                    A(f"{cl.shift_quarter(q, 1)} →", href="/?" + _qs(q=cl.shift_quarter(q, 1), m=m, show=show)))),
         Nav(*[A(f"{MEDIA_LABEL[k]} ({n[k]})", href="/?" + _qs(q=q, m=k, show=show),
@@ -347,6 +414,8 @@ def index(q: str = "", m: str = "listen", show: str = "open", zoek: str = ""):
         body += [card(r, back, stale=q) for r in stale]
     if m == "book" and show == "open":
         body += find_books(zoek, found, q)
+    if m == "work" and show == "open":
+        body += add_work_form(files)
     return Title(f"Consumelijst {q}"), Main(*body)
 
 
@@ -409,6 +478,23 @@ def post_add_book(item_id: str, q: str = ""):
     except ValueError as e:
         return Response(f"Niet opgeslagen: {e}", status_code=400)
     return RedirectResponse(f"/?{_qs(q=q, m='book')}#i{iid}", status_code=303)
+
+
+@app.post("/item/{iid}/deadline")
+def post_deadline(iid: int, deadline: str, back: str = ""):
+    return _apply(iid, back, cl.set_deadline, deadline)
+
+
+@app.post("/work/add")
+def post_add_work(deadline: str, title: str = "", item_id: str = "", pages: str = "",
+                  url: str = ""):
+    try:
+        with closing(db()) as conn:
+            iid = cl.add_work(conn, title, deadline, int(pages) if pages.strip().isdigit() else None,
+                              url, item_id)
+    except ValueError as e:
+        return Response(f"Niet opgeslagen: {e}", status_code=400)
+    return RedirectResponse(f"/?m=work#i{iid}", status_code=303)
 
 
 @app.post("/item/{iid}/carry")
