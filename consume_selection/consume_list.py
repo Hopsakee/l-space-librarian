@@ -396,8 +396,23 @@ def _date(value: str) -> str:
 def toread_files(conn) -> list[sqlite3.Row]:
     """The files in ToRead now, to pick a work document from."""
     return conn.execute(
-        "SELECT i.id, i.title, m.pages FROM items i JOIN item_media m ON m.item_id = i.id "
+        "SELECT i.id, i.title, i.location, m.pages FROM items i JOIN item_media m ON m.item_id = i.id "
         "WHERE i.source = 'toread' AND i.location NOT LIKE 'GONE:%' ORDER BY i.title").fetchall()
+
+
+def toread_tree(files) -> dict:
+    """The ToRead files as the folder tree they sit in: {"dirs": {name: node}, "files": [row]}.
+    The folder comes from the path after `/ToRead/` in `location`; a file with no
+    such path (should not happen) sits at the top."""
+    root: dict = {"dirs": {}, "files": []}
+    for f in files:
+        _, sep, rel = (f["location"] or "").partition("/ToRead/")
+        parts = rel.split("/")[:-1] if sep else []
+        node = root
+        for d in parts:
+            node = node["dirs"].setdefault(d, {"dirs": {}, "files": []})
+        node["files"].append(f)
+    return root
 
 
 def add_work(conn, title: str, deadline: str, pages: int | None = None, url: str = "",
