@@ -25,7 +25,7 @@ tailscale serve --bg 8765
 
 The container listens on the Mac's loopback (`127.0.0.1:8765`) only.
 `tailscale serve` puts HTTPS in front of it on the tailnet: open
-`https://mac-mini-van-jelle.taila9d9bf.ts.net` on a device with Tailscale on.
+`https://mm.taila9d9bf.ts.net` on a device with Tailscale on.
 There is no login, so the tailnet is the login. Writes refuse a request whose
 `Origin`/`Referer` is not the page itself.
 
