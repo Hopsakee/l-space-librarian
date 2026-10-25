@@ -7,7 +7,9 @@ the firehose: book-vs-article-vs-video tradeoffs become possible.
 
 Three-way collection handling (ISC-3.2) — a book is classified by its collections:
 
-  * KNOWN-CANDIDATE ('To read', 'Wishlist')  → an unread book Jelle WANTS to read.
+  * KNOWN-CANDIDATE ('To read', 'Wishlist', 'Currently reading')  → a book Jelle
+    wants to read or is reading now (the consume app can only add a book that is in
+    the catalogue, so a book in progress must be here too).
     Upserted `item_type='book'`, `source='librarything'`, `consumed=0` — a real
     candidate the advice layer can surface. Ownership is irrelevant: "if I want to
     read it, I just buy it" (interview round 1). A book that is ALSO in a Read
@@ -60,7 +62,7 @@ EXPORT_DIRS = [
 EXPORT_GLOB = "librarything_Hopsakee_*.json"
 
 # Collection taxonomy (ISC-3.2). Everything outside these three sets is LOGGED.
-KNOWN_CANDIDATE = {"To read", "Wishlist"}
+KNOWN_CANDIDATE = {"To read", "Wishlist", "Currently reading"}
 KNOWN_READ = {"Read", "Read but unowned"}
 KNOWN_IGNORED = {"Your library", "pBook", "eBook", "aBook"}
 KNOWN = KNOWN_CANDIDATE | KNOWN_READ | KNOWN_IGNORED

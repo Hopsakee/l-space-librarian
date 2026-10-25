@@ -122,3 +122,9 @@ def test_old_table_gains_work_and_deadline(conn):
     assert [(r["title"], r["media_type"], r["page_current"]) for r in
             conn.execute("SELECT * FROM consume_items ORDER BY id")] == \
         [("A book", "book", 12), ("Nota", "work", None)]
+
+
+def test_currently_reading_is_a_candidate():
+    from consume_selection.librarything import classify
+    assert classify(["Your library", "pBook", "Currently reading"]) == "candidate"
+    assert classify(["Your library", "pBook"]) == "ignored"
