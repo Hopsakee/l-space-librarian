@@ -43,7 +43,7 @@ from consume_selection.ingest import upsert_row
 # --- constants --------------------------------------------------------------
 
 TOREAD_ROOT = Path.home() / "Drive" / "ToRead"
-DOC_EXTS = {".pdf", ".epub", ".md", ".html"}
+DOC_EXTS = {".pdf", ".epub", ".md", ".html", ".docx", ".pptx", ".txt"}
 
 # A path is skipped if ANY of its parts matches one of these (case-insensitive).
 # Covers the ISC-10 set (sync.ffs_db, Keybindings/!Keybindings, _read, hidden) plus
@@ -156,9 +156,14 @@ def pdf_pages(path: Path) -> int | None:
 
 
 def text_words(path: Path) -> int | None:
-    """Words in an EPUB (its XHTML files) or a markdown/HTML file."""
+    """Words in an EPUB (its XHTML files), a Word/PowerPoint file (its XML) or a
+    markdown/HTML/text file."""
     try:
-        if path.suffix.lower() == ".epub":
+        if path.suffix.lower() in (".docx", ".pptx"):
+            with zipfile.ZipFile(path) as z:
+                text = " ".join(z.read(n).decode("utf-8", "ignore") for n in z.namelist()
+                                if re.fullmatch(r"word/document\.xml|ppt/slides/slide\d+\.xml", n))
+        elif path.suffix.lower() == ".epub":
             with zipfile.ZipFile(path) as z:
                 text = " ".join(z.read(n).decode("utf-8", "ignore") for n in z.namelist()
                                 if n.lower().endswith((".xhtml", ".html", ".htm")))
@@ -189,7 +194,7 @@ def row_from_file(rel: Path, root: Path) -> dict:
         "source_url": None,
         "site_name": "toread",
         "summary": build_summary(rel, title),
-        "item_type": rel.suffix.lower().lstrip("."),  # pdf|epub|md|html
+        "item_type": rel.suffix.lower().lstrip("."),  # pdf|epub|md|html|docx|pptx|txt
         "word_count": word_count(root / rel),
         "location": str(root / rel),  # absolute path (ISC-9)
         "added_at": None,
@@ -212,7 +217,7 @@ def main(
     dry_run: bool = False,  # scan + report only, write nothing
     db: str = "",           # consume.db path override (tests use a temp db)
 ):
-    "Scan ~/Drive/ToRead for pdf/epub/md/html, upsert into consume.db, and delist files that vanished for 2 consecutive scans."
+    "Scan ~/Drive/ToRead for pdf/epub/md/html/docx/pptx/txt, upsert into consume.db, and delist files that vanished for 2 consecutive scans."
     scan_root = Path(root).expanduser() if root else TOREAD_ROOT
     files = scan(scan_root)
     current = {item_id(rel): rel for rel in files}
