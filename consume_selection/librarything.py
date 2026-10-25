@@ -13,6 +13,11 @@ Three-way collection handling (ISC-3.2) — a book is classified by its collecti
     read it, I just buy it" (interview round 1). A book that is ALSO in a Read
     collection is a re-read and is treated as READ (dropped as a candidate).
 
+  * KNOWN-READING ('Currently reading')  → already chosen, so NOT a candidate for
+    the advice layer: the book goes on the consume list as `doing` (Boeken tab),
+    which `_READING_ADVICE` already skips. The catalogue row is still written, for
+    the title, pages and link.
+
   * KNOWN-READ ('Read', 'Read but unowned')  → a book Jelle has ALREADY read.
     Ingested as a KNOWLEDGE row: `consumed=1` (+ `consumed_at` from entrydate) so it
     NEVER appears as a candidate (candidates filter `consumed=0`) while "what do I
@@ -45,6 +50,7 @@ from pathlib import Path
 
 from fastcore.script import call_parse
 
+from consume_selection import consume_list as cl
 from consume_selection.consume_list import WORDS_PER_PAGE
 from consume_selection.db import connect, init_schema
 from consume_selection.ingest import upsert_row
@@ -61,9 +67,10 @@ EXPORT_GLOB = "librarything_Hopsakee_*.json"
 
 # Collection taxonomy (ISC-3.2). Everything outside these three sets is LOGGED.
 KNOWN_CANDIDATE = {"To read", "Wishlist"}
+KNOWN_READING = {"Currently reading"}
 KNOWN_READ = {"Read", "Read but unowned"}
 KNOWN_IGNORED = {"Your library", "pBook", "eBook", "aBook"}
-KNOWN = KNOWN_CANDIDATE | KNOWN_READ | KNOWN_IGNORED
+KNOWN = KNOWN_CANDIDATE | KNOWN_READING | KNOWN_READ | KNOWN_IGNORED
 
 # Stars → quality tier (interview round 1; half-stars exist in the export: 3.5, 4.5).
 #   4.5-5 → s | 4 → a | 3-3.5 → b | 2-2.5 → c | ≤1.5 → d
@@ -116,13 +123,15 @@ def newest_export(explicit: str = "") -> Path:
 
 
 def classify(collections: list[str]) -> str:
-    """Classify a record by its collections: 'read' | 'candidate' | 'ignored'.
+    """Classify a record by its collections: 'read' | 'reading' | 'candidate' | 'ignored'.
 
-    READ wins over CANDIDATE (a book in both To-read and Read is a re-read →
+    READ wins over READING and CANDIDATE; READING wins over CANDIDATE. (A book in both To-read and Read is a re-read →
     treated as read, dropped as a candidate — ISC accepted, documented)."""
     cols = set(collections or [])
     if cols & KNOWN_READ:
         return "read"
+    if cols & KNOWN_READING:
+        return "reading"
     if cols & KNOWN_CANDIDATE:
         return "candidate"
     return "ignored"
@@ -190,6 +199,18 @@ def upsert_item(conn, row: dict, *, consumed: int, consumed_at_val: str | None) 
                extra_cols=("consumed", "consumed_at"))
 
 
+def start_reading(conn, item_id: str) -> None:
+    """A book he is reading is on the consume list as `doing`. Not on the list yet:
+    add it for this quarter. On it as `todo`: start it. Anything else (already
+    doing, or done/dropped on purpose) is left as he set it."""
+    row = conn.execute("SELECT id, status FROM consume_items WHERE item_id = ? "
+                       "ORDER BY id DESC", (item_id,)).fetchone()
+    if row is None:
+        cl.set_status(conn, cl.add_book(conn, item_id, cl.current_quarter()), "doing")
+    elif row["status"] == "todo":
+        cl.set_status(conn, row["id"], "doing")
+
+
 def write_rating(conn, item_id: str, tier: str, stars) -> None:
     """Idempotent upsert of Jelle's own star rating into `ratings`, keyed on
     (item_id, rater='ik'). Mirrors watchlater.write_rating: tier lowercased,
@@ -220,7 +241,7 @@ def main(
     conn = connect(db or None)
     init_schema(conn)
 
-    candidates = read = ignored = rated = 0
+    candidates = reading = read = ignored = rated = 0
     unknown: dict[str, int] = {}
 
     for rec in data.values():
@@ -245,6 +266,11 @@ def main(
 
         if is_read:
             read += 1
+        elif kind == "reading":
+            if not dry_run:
+                conn.commit()  # the catalogue row first: the list row points at it
+                start_reading(conn, row["id"])
+            reading += 1
         else:
             candidates += 1
 
@@ -261,7 +287,7 @@ def main(
     ik = conn.execute("SELECT COUNT(*) FROM ratings WHERE rater='ik'").fetchone()[0]
     conn.close()
 
-    print(f"librarything export={path.name} candidates={candidates} read={read} "
+    print(f"librarything export={path.name} candidates={candidates} reading={reading} read={read} "
           f"ignored={ignored} rated={rated} dry_run={dry_run}")
     print(f"items total now {total}; ratings(rater='ik') now {ik}")
     if unknown:

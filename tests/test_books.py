@@ -122,3 +122,26 @@ def test_old_table_gains_work_and_deadline(conn):
     assert [(r["title"], r["media_type"], r["page_current"]) for r in
             conn.execute("SELECT * FROM consume_items ORDER BY id")] == \
         [("A book", "book", 12), ("Nota", "work", None)]
+
+
+def test_currently_reading_goes_on_the_list_as_doing(conn):
+    from consume_selection.librarything import classify, start_reading
+    assert classify(["Your library", "pBook", "Currently reading"]) == "reading"
+    assert classify(["Currently reading", "To read"]) == "reading"
+    assert classify(["Currently reading", "Read"]) == "read"
+    assert classify(["Your library", "pBook"]) == "ignored"
+    start_reading(conn, "lt-1")
+    row = conn.execute("SELECT * FROM consume_items WHERE item_id = 'lt-1'").fetchone()
+    assert (row["media_type"], row["status"], row["pages_total"]) == ("book", "doing", 300)
+    start_reading(conn, "lt-1")                                   # idempotent
+    assert conn.execute("SELECT COUNT(*) FROM consume_items").fetchone()[0] == 1
+
+
+def test_start_reading_respects_his_choices(conn):
+    from consume_selection.librarything import start_reading
+    iid = cl.add_book(conn, "lt-1", "2026-Q4")                    # todo -> doing
+    start_reading(conn, "lt-1")
+    assert cl.get(conn, iid)["status"] == "doing"
+    cl.drop(conn, iid, "iets-urgenter")                           # dropped stays dropped
+    start_reading(conn, "lt-1")
+    assert cl.get(conn, iid)["status"] == "dropped"
