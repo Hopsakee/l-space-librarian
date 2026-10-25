@@ -74,6 +74,13 @@ form.addwork > *, form.addwork select { width:100%; min-width:0; }
 form.addwork label { display:grid; gap:.2rem; color:var(--soft); }
 form.addwork input { min-height:44px; font:inherit; padding:0 .5rem; border:2px solid var(--line);
   border-radius:6px; background:var(--bg); color:var(--fg); }
+details.tr-tree { border:2px solid var(--line); border-radius:6px; padding:.4rem .6rem; }
+details.tr-tree summary { min-height:44px; display:flex; align-items:center; }
+details.tr-dir { margin-left:1rem; }
+details.tr-dir > summary { min-height:40px; display:flex; align-items:center; font-weight:600; }
+form.addwork label.tr-file { display:flex; align-items:flex-start; gap:.5rem; min-height:40px;
+  margin-left:1rem; color:var(--fg); word-break:break-word; }
+form.addwork label.tr-file input { min-height:0; width:auto; margin-top:.35rem; }
 input[type=date] { min-height:44px; font:inherit; padding:0 .5rem; border:2px solid var(--line);
   border-radius:6px; background:var(--bg); color:var(--fg); }
 select, textarea { min-height:44px; font:inherit; border:2px solid var(--line); border-radius:6px;
@@ -309,16 +316,36 @@ def work_warning(w):
              cls="wip over" if w["work_late"] else "wip")
 
 
+def _tree_count(node) -> int:
+    return len(node["files"]) + sum(_tree_count(n) for n in node["dirs"].values())
+
+
+def _file_name(f) -> str:
+    return (f["location"] or f["title"]).rsplit("/", 1)[-1]
+
+
+def toread_tree_nodes(node) -> list:
+    """Folders (collapsed) then files, in the order they sit in ToRead; a radio per file."""
+    out = [Details(Summary(f"{name} ({_tree_count(sub)})"), *toread_tree_nodes(sub), cls="tr-dir")
+           for name, sub in sorted(node["dirs"].items(), key=lambda kv: kv[0].lower())]
+    out += [Label(Input(type="radio", name="item_id", value=f["id"]),
+                  f" {_file_name(f)}" + (f" ({f['pages']} p.)" if f["pages"] else ""),
+                  cls="tr-file")
+            for f in sorted(node["files"], key=lambda f: _file_name(f).lower())]
+    return out
+
+
 def add_work_form(files) -> list:
-    """Work reading is added by hand only (decided 2026-10-24), always with a deadline."""
-    pick = Select(Option("— of kies een bestand uit ToRead —", value=""),
-                  *[Option(f"{f['title']}" + (f" ({f['pages']} p.)" if f["pages"] else ""),
-                           value=f["id"]) for f in files],
-                  name="item_id", aria_label="bestand uit ToRead")
+    """Work reading is added by hand only (decided 2026-10-24), always with a deadline.
+    The ToRead files are shown as the folders they sit in."""
+    tree = Details(Summary(f"Of kies een bestand uit ToRead ({len(files)})"),
+                   Label(Input(type="radio", name="item_id", value="", checked=True),
+                         " geen bestand (titel hierboven)", cls="tr-file"),
+                   *toread_tree_nodes(cl.toread_tree(files)), cls="tr-tree")
     return [H2("Werkdocument toevoegen", cls="section"),
             Form(Input(name="title", placeholder="titel (leeg = naam van het bestand)",
                        aria_label="titel"),
-                 pick,
+                 tree,
                  Label("Deadline", Input(name="deadline", type="date", required=True)),
                  Input(name="pages", type="number", inputmode="numeric", min="1",
                        placeholder="aantal pagina's (mag leeg)", aria_label="aantal pagina's"),

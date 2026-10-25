@@ -145,3 +145,17 @@ def test_start_reading_respects_his_choices(conn):
     cl.drop(conn, iid, "iets-urgenter")                           # dropped stays dropped
     start_reading(conn, "lt-1")
     assert cl.get(conn, iid)["status"] == "dropped"
+
+
+def test_toread_tree_follows_the_folders(db):
+    root = "/home/hoggle/Drive/ToRead/"
+    db.executemany(
+        "INSERT INTO items (id, source, title, item_type, word_count, location, ingested_at) "
+        "VALUES (?, 'toread', ?, 'pdf', 5000, ?, 'x')",
+        [("a", "Top", root + "Top.pdf"), ("b", "Nota", root + "Projecten/2026-Q4/Nota.pdf"),
+         ("c", "Plan", root + "Projecten/2026-Q4/Plan.md"), ("d", "Gone", "GONE: " + root + "G.pdf")])
+    tree = cl.toread_tree(cl.toread_files(db))
+    assert [f["id"] for f in tree["files"]] == ["a"]
+    q4 = tree["dirs"]["Projecten"]["dirs"]["2026-Q4"]
+    assert sorted(f["id"] for f in q4["files"]) == ["b", "c"]
+    assert "d" not in [f["id"] for f in tree["files"]] + [f["id"] for f in q4["files"]]
