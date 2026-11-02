@@ -13,5 +13,12 @@ COPY consume_web/app.py consume_web/
 COPY consume_web/icons/icon-180.png consume_web/icons/icon-512.png consume_web/icons/
 
 ENV HOST=0.0.0.0 PORT=8000 CONSUME_DB=/data/l-space.db
+# Unprivileged user with a real home dir and fixed UID/GID
+RUN groupadd --system --gid 1000 appuser \
+ && useradd --system --uid 1000 --gid appuser --create-home --shell /usr/sbin/nologin appuser \
+ && mkdir -p /data \
+ && chown -R appuser:appuser /app /data
+USER appuser
+
 EXPOSE 8000
 CMD ["python", "consume_web/app.py"]
