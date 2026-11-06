@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS items (
     summary       TEXT,               -- Readwise-generated summary (no LLM call here)
     item_type     TEXT,               -- Readwise category: article|email|video|pdf|...
     word_count    INTEGER,
-    location      TEXT,               -- new|later|shortlist|archive|feed
+    location      TEXT,               -- new|later|shortlist|archive|feed; 'GONE: <last>' once delisted
     added_at      TEXT,               -- Readwise created_at
     ingested_at   TEXT NOT NULL,      -- when this row was written/refreshed
     -- populated by later slices; present now to avoid a migration --
@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS items (
     embedding     BLOB,               -- summary embedding (vector bytes)
     consumed      INTEGER NOT NULL DEFAULT 0,  -- read-state (F11; flow built later)
     consumed_at   TEXT,
-    duration_minutes INTEGER          -- playback minutes for time-bearing items (podcasts/videos)
+    duration_minutes INTEGER,         -- playback minutes for time-bearing items (podcasts/videos)
+    reading_progress REAL             -- Reader's reading_progress, 0..1 (readwise rows only)
 );
 """
 
@@ -63,6 +64,7 @@ CREATE TABLE IF NOT EXISTS items (
 # migrates in place — migration-safe, no flag day. Fresh dbs get them from the DDL.
 _MIGRATION_COLUMNS = {
     "duration_minutes": "INTEGER",   # F-L: itunes:duration for podcasts; benefits videos later
+    "reading_progress": "REAL",      # Reader's 0..1 progress: an 80%-read Later item is not unread
 }
 
 # Every rating tag found on an item. rater = model name (e.g. 'mistrall-small-4'),
