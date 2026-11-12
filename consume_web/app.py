@@ -398,17 +398,55 @@ SOURCE_LABEL = {"youtube-wl": "Watch Later", "youtube-course": "cursus", "podcas
 DONE_LABEL = {"article": "gelezen", "watch": "gezien", "listen": "geluisterd"}
 
 
-def find_items(m: str, zoek: str, results, q: str) -> list:
+# Media whose catalogue the box can refresh on request: the YouTube playlist and
+# Readwise Reader. Podcast episodes come from feeds the Mac fetches at night.
+REFRESHABLE = ("watch", "article")
+
+
+def _hhmm(iso: str) -> str:
+    return _dt.datetime.fromisoformat(iso).astimezone().strftime("%H:%M")
+
+
+def refresh_line(st: dict, m: str, q: str, zoek: str) -> list:
+    """How fresh the catalogue is, and a button to refresh it now. While the box
+    has a request open the page reloads itself, so the new items just appear."""
+    if st["stuck"]:
+        txt, cls = "Verversen wacht al minuten: de box-job catalogue-refresh draait niet.", "late"
+    elif st["pending"]:
+        txt, cls = "Playlist en Reader worden ververst… de pagina laadt zo vanzelf opnieuw.", "late"
+    elif st["done_at"]:
+        txt = f"Catalogus ververst om {_hhmm(st['done_at'])}: {st['result'] or ''}"
+        cls = "meta" if st["ok"] else "late"
+    else:
+        txt, cls = "Catalogus nog niet ververst sinds de nacht.", "meta"
+    out = [P(txt, cls=cls)]
+    if not st["pending"] or st["stuck"]:
+        out.append(Form(Input(type="hidden", name="m", value=m), Input(type="hidden", name="q", value=q),
+                        Input(type="hidden", name="zoek", value=zoek),
+                        Input(type="hidden", name="force", value="1"),
+                        Button("Nu verversen"), method="post", action="/find", cls="row"))
+    elif not st["stuck"]:
+        out.append(Script("setTimeout(()=>location.reload(),5000)"))
+    return out
+
+
+def find_items(m: str, zoek: str, results, q: str, st: dict | None = None) -> list:
     """Add an article, video or podcast from the catalogue (Jelle, 2026-11-12).
-    Over the cap, an item the advice chose makes way (see cl.make_room)."""
+    Over the cap, an item the advice chose makes way (see cl.make_room). For
+    video and articles a search first asks the box to refresh the catalogue,
+    because what he adds is mostly what he just saved."""
     title, none = ADD_LABEL[m]
-    out = [H2(title, cls="section"),
+    out = [H2(title, cls="section", id="find"),
            Form(Input(name="zoek", value=zoek, placeholder="titel, kanaal of auteur", type="search",
                       aria_label=title.lower()),
                 Input(type="hidden", name="m", value=m), Input(type="hidden", name="q", value=q),
-                Button("Zoek"), method="get", action="/", cls="find")]
+                Button("Zoek"), method="post" if st else "get", action="/find" if st else "/",
+                cls="find")]
+    if st:
+        out += refresh_line(st, m, q, zoek)
     if zoek and not results:
-        out.append(P(none, cls="meta"))
+        out.append(P(none + (" Net bewaard? Wacht op het verversen." if st and st["pending"] else ""),
+                     cls="meta"))
     elif results:
         out.append(P("Boven de grens gaat er een advies-item af dat je nog niet bent begonnen.",
                      cls="meta"))
@@ -459,6 +497,7 @@ def index(q: str = "", m: str = "listen", show: str = "open", zoek: str = "", we
         if zoek.strip() and show == "open":
             found = (cl.search_books(conn, zoek) if m == "book" else
                      cl.search_items(conn, m, zoek) if m in cl.HAND_MEDIA else [])
+        st = cl.refresh_state(conn) if m in REFRESHABLE and show == "open" else None
         gone = cl.get(conn, weg) if weg else None
         gone = gone if gone and gone["status"] == "dropped" else None
         files = cl.toread_files(conn) if m == "work" and show == "open" else []
@@ -496,7 +535,7 @@ def index(q: str = "", m: str = "listen", show: str = "open", zoek: str = "", we
     if m == "book" and show == "open":
         body += find_books(zoek, found, q)
     if m in cl.HAND_MEDIA and show == "open":
-        body += find_items(m, zoek, found, q)
+        body += find_items(m, zoek, found, q, st)
     if m == "work" and show == "open":
         body += add_work_form(files)
     return Title(f"Consumelijst {q}"), Main(*body)
@@ -561,6 +600,16 @@ def post_add_book(item_id: str, q: str = ""):
     except ValueError as e:
         return Response(f"Niet opgeslagen: {e}", status_code=400)
     return RedirectResponse(f"/?{_qs(q=q, m='book')}#i{iid}", status_code=303)
+
+
+@app.post("/find")
+def post_find(m: str, q: str = "", zoek: str = "", force: str = ""):
+    """A search on a refreshable tab: ask the box for fresh items (unless it just
+    refreshed), then show the results of what is there now."""
+    if m in REFRESHABLE:
+        with closing(db()) as conn:
+            cl.request_refresh(conn, force=bool(force))
+    return RedirectResponse(f"/?{_qs(q=q, m=m, zoek=zoek.strip())}#find", status_code=303)
 
 
 @app.post("/item/add")
