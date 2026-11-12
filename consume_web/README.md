@@ -13,6 +13,17 @@ the list over its cap, one advice item he has not started (`lane` set, status
 `iets-urgenter`. The page names the dropped item and offers Terugzetten. Hand-added
 items have no `lane`, so they never make way themselves.
 
+**Fresh catalogue on request** (2026-11-12). What he adds by hand is mostly what
+he just saved, and the nightly intake is too late for it. A search on Kijken or
+Artikelen is a POST to `/find`. Unless the catalogue was refreshed within 10
+minutes, that writes a row in `catalogue_refresh`. The box's `catalogue-refresh`
+job (every minute, `_CONSUME_LIST/Tools/CatalogueRefresh.py`) claims the row,
+gives every playlist video a catalogue row, ingests recent Reader saves, and
+writes its result back. While a request is open the page reloads itself every
+5 s. After 5 minutes it says that the box job is not running. "Nu verversen"
+forces a refresh. Podcasts have no on-demand refresh, because their feeds are
+fetched on the Mac at night.
+
 Five tabs: Boeken, Artikelen, Kijken, Luisteren, Werk. **Werk** is reading his job
 needs, by a deadline: added by hand here only (typed in, or a ToRead file), with
 a bookmark like a book, and three ways out: Klaar, Deadline verzetten, Laten

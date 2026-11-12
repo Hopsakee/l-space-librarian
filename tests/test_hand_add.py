@@ -109,3 +109,25 @@ def test_over_cap_with_nothing_to_drop_still_adds(conn):
     iid, gone = cl.add_item(conn, "yt-1", "watch", Q)
     assert gone is None and cl.get(conn, iid)["status"] == "todo"
     assert cl.wip(conn)["over_cap"]
+
+
+def test_refresh_request_lifecycle(conn):
+    import datetime as dt
+    t0 = dt.datetime(2026, 11, 12, 10, 0, tzinfo=dt.timezone.utc)
+    st = cl.refresh_state(conn, t0)
+    assert (st["pending"], st["done_at"], st["fresh"]) == (False, None, False)
+    assert cl.request_refresh(conn, now=t0)
+    assert not cl.request_refresh(conn, now=t0 + dt.timedelta(minutes=1))   # one is waiting
+    assert cl.refresh_state(conn, t0 + dt.timedelta(minutes=1))["pending"]
+    assert cl.refresh_state(conn, t0 + dt.timedelta(minutes=6))["stuck"]   # box not running
+    # the box claims and finishes it
+    conn.execute("UPDATE catalogue_refresh SET started_at = ?, done_at = ?, ok = 1, "
+                 "result = '3 nieuwe video''s'", ((t0 + dt.timedelta(minutes=1)).isoformat(),) * 2)
+    conn.commit()
+    t2 = t0 + dt.timedelta(minutes=2)
+    st = cl.refresh_state(conn, t2)
+    assert (st["pending"], st["fresh"], st["ok"], st["result"]) == (False, True, True, "3 nieuwe video's")
+    assert not cl.request_refresh(conn, now=t2)                 # just refreshed: no new one
+    assert cl.request_refresh(conn, force=True, now=t2)         # the button forces one
+    assert not cl.request_refresh(conn, now=t2 + dt.timedelta(minutes=1))  # still waiting
+    assert cl.request_refresh(conn, now=t0 + dt.timedelta(minutes=30))  # stuck: ask again

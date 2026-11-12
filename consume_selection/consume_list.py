@@ -118,6 +118,25 @@ SELECT id AS item_id,
 FROM items;
 """
 
+# Asking the box to refresh the catalogue (Jelle, 2026-11-12: what he adds by
+# hand is almost always what he just saved, and the nightly intake is too late).
+# The app runs on the Mac and cannot fetch YouTube or Readwise; the box can. So
+# the app writes a request here and the box's `catalogue-refresh` job (every
+# minute, _CONSUME_LIST/Tools/CatalogueRefresh.py) claims it, fetches the
+# playlist and recent Reader saves, and writes the result back.
+REFRESH_DDL = """
+CREATE TABLE IF NOT EXISTS catalogue_refresh (
+    id           INTEGER PRIMARY KEY,
+    requested_at TEXT NOT NULL,       -- UTC ISO, by the app
+    started_at   TEXT,                -- by the box, when it claims the request
+    done_at      TEXT,                -- by the box
+    ok           INTEGER,             -- 1 = every step worked
+    result       TEXT                 -- one line for the page, Dutch
+);
+"""
+REFRESH_FRESH_MIN = 10   # a search within this many minutes of a refresh asks none
+REFRESH_STUCK_MIN = 5    # a request still waiting after this long: the box job is not running
+
 CONSUME_INDEXES_DDL = [
     "CREATE INDEX IF NOT EXISTS idx_consume_status ON consume_items(status);",
     "CREATE INDEX IF NOT EXISTS idx_consume_item ON consume_items(item_id);",
@@ -128,6 +147,7 @@ def init_consume_schema(conn: sqlite3.Connection) -> None:
     conn.execute("DROP VIEW IF EXISTS item_media")  # recreated, so a rule change lands
     conn.execute(ITEM_MEDIA_DDL)
     conn.execute(CONSUME_ITEMS_DDL)
+    conn.execute(REFRESH_DDL)
     _rebuild_if_old(conn)
     for ddl in CONSUME_INDEXES_DDL:
         conn.execute(ddl)
@@ -382,6 +402,43 @@ def add_book(conn, item_id: str, quarter: str) -> int:
          item["pages"], _today(), _now()))
     conn.commit()
     return cur.lastrowid
+
+
+# --- catalogue refresh -----------------------------------------------------
+
+def _utc(now: _dt.datetime | None = None) -> _dt.datetime:
+    return (now or _dt.datetime.now(_dt.timezone.utc)).replace(microsecond=0)
+
+
+def refresh_state(conn, now: _dt.datetime | None = None) -> dict:
+    """The newest request and the newest finished one, for the page.
+    `pending`: a request the box has not finished. `stuck`: pending so long that
+    the box job is evidently not running. `fresh`: finished within REFRESH_FRESH_MIN."""
+    now = _utc(now)
+    last = conn.execute("SELECT * FROM catalogue_refresh ORDER BY id DESC LIMIT 1").fetchone()
+    done = conn.execute("SELECT * FROM catalogue_refresh WHERE done_at IS NOT NULL "
+                        "ORDER BY id DESC LIMIT 1").fetchone()
+    pending = last is not None and last["done_at"] is None
+    age = (now - _dt.datetime.fromisoformat(last["requested_at"])).total_seconds() / 60 \
+        if pending else 0
+    done_age = (now - _dt.datetime.fromisoformat(done["done_at"])).total_seconds() / 60 \
+        if done else None
+    return {"pending": pending, "stuck": pending and age > REFRESH_STUCK_MIN,
+            "done_at": done["done_at"] if done else None, "ok": bool(done and done["ok"]),
+            "result": done["result"] if done else None,
+            "fresh": done_age is not None and done_age < REFRESH_FRESH_MIN}
+
+
+def request_refresh(conn, force: bool = False, now: _dt.datetime | None = None) -> bool:
+    """Ask the box to refresh the catalogue, unless a request is already waiting
+    or (without `force`) the last refresh is recent. True when one was written."""
+    st = refresh_state(conn, now)
+    if (st["pending"] and not st["stuck"]) or (st["fresh"] and not force):
+        return False
+    conn.execute("INSERT INTO catalogue_refresh (requested_at) VALUES (?)",
+                 (_utc(now).isoformat(),))
+    conn.commit()
+    return True
 
 
 # --- articles, videos, podcasts by hand ------------------------------------
