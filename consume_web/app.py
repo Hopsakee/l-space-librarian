@@ -370,8 +370,8 @@ def book_progress(r, back: str) -> list:
 
 
 def find_books(zoek: str, results, q: str) -> list:
-    """Add a book he owns. Only books: the list is a filter against hoarding,
-    and books are the one thing he picks himself (decided 2026-10-24)."""
+    """Add a book he owns (decided 2026-10-24). Books have their own cap, so
+    nothing makes way for one; see find_items for the other media."""
     out = [H2("Boek toevoegen", cls="section"),
            Form(Input(name="zoek", value=zoek, placeholder="titel of auteur", type="search",
                       aria_label="zoek een boek"),
@@ -390,6 +390,53 @@ def find_books(zoek: str, results, q: str) -> list:
     return out
 
 
+ADD_LABEL = {"article": ("Artikel toevoegen", "Geen artikel gevonden in Readwise, ToRead of Hopswiki."),
+             "watch": ("Video toevoegen", "Geen video gevonden in Watch Later of Readwise."),
+             "listen": ("Aflevering toevoegen", "Geen aflevering gevonden in je podcastfeeds of Snipd.")}
+SOURCE_LABEL = {"youtube-wl": "Watch Later", "youtube-course": "cursus", "podcast-opml": "podcastfeed",
+                "readwise": "Readwise", "toread": "ToRead", "hopswiki": "Hopswiki"}
+DONE_LABEL = {"article": "gelezen", "watch": "gezien", "listen": "geluisterd"}
+
+
+def find_items(m: str, zoek: str, results, q: str) -> list:
+    """Add an article, video or podcast from the catalogue (Jelle, 2026-11-12).
+    Over the cap, an item the advice chose makes way (see cl.make_room)."""
+    title, none = ADD_LABEL[m]
+    out = [H2(title, cls="section"),
+           Form(Input(name="zoek", value=zoek, placeholder="titel, kanaal of auteur", type="search",
+                      aria_label=title.lower()),
+                Input(type="hidden", name="m", value=m), Input(type="hidden", name="q", value=q),
+                Button("Zoek"), method="get", action="/", cls="find")]
+    if zoek and not results:
+        out.append(P(none, cls="meta"))
+    elif results:
+        out.append(P("Boven de grens gaat er een advies-item af dat je nog niet bent begonnen.",
+                     cls="meta"))
+    for r in results:
+        bits = [r["author"], SOURCE_LABEL.get(r["source"], r["source"]),
+                f"AI {r['ai_tier']}" if r["ai_tier"] else None,
+                DONE_LABEL[m] if r["consumed"] else None]
+        out.append(Article(Header(H2(r["title"] or r["id"])),
+                           P(" · ".join(x for x in bits if x), cls="meta"),
+                           Form(Input(type="hidden", name="item_id", value=r["id"]),
+                                Input(type="hidden", name="m", value=m),
+                                Input(type="hidden", name="q", value=q),
+                                Button(f"Op de lijst voor {q}"),
+                                method="post", action="/item/add")))
+    return out
+
+
+def made_way(r, back: str):
+    """The advice item that left so a hand-added one fits, with a way back.
+    The add redirects here, not to the new item, so this is never missed."""
+    added = (r["drop_text"] or "").removeprefix("plaats gemaakt voor: ")
+    return Article(P(f"„{added}” staat erop; om plaats te maken ging eraf: {r['title']}",
+                     cls="late"),
+                   Div(_post(r["id"], "status", back, Button("Terugzetten", name="status",
+                                                              value="todo")), cls="row"),
+                   cls="notice", id="weg")
+
+
 # --- pages -----------------------------------------------------------------
 
 def _qs(**kw) -> str:
@@ -397,7 +444,7 @@ def _qs(**kw) -> str:
 
 
 @app.get("/")
-def index(q: str = "", m: str = "listen", show: str = "open", zoek: str = ""):
+def index(q: str = "", m: str = "listen", show: str = "open", zoek: str = "", weg: int = 0):
     now = cl.current_quarter()
     q = q if len(q) == 7 and q[4:6] == "-Q" else now
     m = m if m in cl.MEDIA else "listen"
@@ -408,7 +455,12 @@ def index(q: str = "", m: str = "listen", show: str = "open", zoek: str = ""):
         n = cl.counts(conn, q, show)
         w = cl.wip(conn)
         stale = cl.stale_open(conn, q, m) if show == "open" and q == now else []
-        found = cl.search_books(conn, zoek) if m == "book" and zoek.strip() else []
+        found = []
+        if zoek.strip() and show == "open":
+            found = (cl.search_books(conn, zoek) if m == "book" else
+                     cl.search_items(conn, m, zoek) if m in cl.HAND_MEDIA else [])
+        gone = cl.get(conn, weg) if weg else None
+        gone = gone if gone and gone["status"] == "dropped" else None
         files = cl.toread_files(conn) if m == "work" and show == "open" else []
 
     wip_txt = (f"Open: {w['open']} ({w['this_quarter']} dit kwartaal, "
@@ -434,6 +486,8 @@ def index(q: str = "", m: str = "listen", show: str = "open", zoek: str = ""):
         body.append(P(f"Boeken open: {w['books_open']} · grens {w['book_cap']}"
                       + (" — eerst een boek afmaken of laten vallen" if over else ""),
                       cls="wip over" if over else "wip"))
+    if gone:
+        body.append(made_way(gone, back))
     body += [card(r, back) for r in items] or [P("Niets hier.", cls="empty")]
     if stale:
         body.append(H2(f"Open uit eerdere kwartalen ({len(stale)})", cls="section"))
@@ -441,6 +495,8 @@ def index(q: str = "", m: str = "listen", show: str = "open", zoek: str = ""):
         body += [card(r, back, stale=q) for r in stale]
     if m == "book" and show == "open":
         body += find_books(zoek, found, q)
+    if m in cl.HAND_MEDIA and show == "open":
+        body += find_items(m, zoek, found, q)
     if m == "work" and show == "open":
         body += add_work_form(files)
     return Title(f"Consumelijst {q}"), Main(*body)
@@ -505,6 +561,19 @@ def post_add_book(item_id: str, q: str = ""):
     except ValueError as e:
         return Response(f"Niet opgeslagen: {e}", status_code=400)
     return RedirectResponse(f"/?{_qs(q=q, m='book')}#i{iid}", status_code=303)
+
+
+@app.post("/item/add")
+def post_add_item(item_id: str, m: str, q: str = ""):
+    q = q if len(q) == 7 and q[4:6] == "-Q" else cl.current_quarter()
+    try:
+        with closing(db()) as conn:
+            iid, gone = cl.add_item(conn, item_id, m, q)
+    except ValueError as e:
+        return Response(f"Niet opgeslagen: {e}", status_code=400)
+    if gone:
+        return RedirectResponse(f"/?{_qs(q=q, m=m, weg=gone['id'])}#weg", status_code=303)
+    return RedirectResponse(f"/?{_qs(q=q, m=m)}#i{iid}", status_code=303)
 
 
 @app.post("/item/{iid}/deadline")

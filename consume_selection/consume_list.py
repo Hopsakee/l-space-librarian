@@ -4,6 +4,8 @@ Reading is two media since 2026-10-24: a `book` takes days or weeks and is read
 in sessions, with its pages tracked; an `article` (also a document or a
 Braincave note) is one sitting. `item_media` decides which a catalogue item is.
 `work` is reading his job requires: added by hand only, always with a deadline.
+Articles, videos and podcasts come from the advice, or by hand from the
+catalogue (2026-11-12); a hand-added one past the cap pushes out an advice item.
 
 Everything else in l-space.db is the firehose (what was collected and how the
 models rated it). `consume_items` is the commitment layer on top of it: the
@@ -380,6 +382,103 @@ def add_book(conn, item_id: str, quarter: str) -> int:
          item["pages"], _today(), _now()))
     conn.commit()
     return cur.lastrowid
+
+
+# --- articles, videos, podcasts by hand ------------------------------------
+# Jelle, 2026-11-12: like books, he may add an article, video or podcast from
+# the catalogue himself. The cap stays a filter: when a hand-added item puts
+# the list over it, one item the advice chose makes way.
+
+HAND_MEDIA = ("article", "watch", "listen")
+# catalogue source -> consume_items.source, so the card reads like advice rows
+_SOURCE = {"youtube-wl": "youtube", "youtube-course": "youtube", "podcast-opml": "podcast"}
+# A model's tier for an item, from `ratings`: Sonnet raters first (the nightly
+# YouTube and podcast raters), never his own ('ik') or the untagged 'bare'.
+_AI_TIER = ("(SELECT upper(r.tier) FROM ratings r WHERE r.item_id = i.id "
+            "AND r.rater NOT IN ('ik','bare') AND upper(r.tier) IN ('S','A','B','C','D') "
+            "ORDER BY r.rater LIKE 'claude-sonnet%' DESC, r.rater LIMIT 1)")
+
+
+def search_items(conn, media: str, text: str, limit: int = 15) -> list[sqlite3.Row]:
+    """Catalogue items of one medium whose title or author contains `text`, not
+    already open on the list. Not yet consumed first, then the best AI tier."""
+    if media not in HAND_MEDIA:
+        raise ValueError(f"medium must be one of {HAND_MEDIA}, not {media!r}")
+    like = f"%{text.strip()}%"
+    return conn.execute(
+        f"SELECT * FROM (SELECT i.id, i.title, i.author, i.source, i.consumed, "
+        f"{_AI_TIER} AS ai_tier FROM items i "
+        "JOIN item_media m ON m.item_id = i.id "
+        "WHERE m.media = :m AND (i.title LIKE :t OR i.author LIKE :t) "
+        "AND (i.location IS NULL OR i.location NOT LIKE 'GONE:%') "
+        "AND i.id NOT IN (SELECT item_id FROM consume_items WHERE item_id IS NOT NULL "
+        "                 AND status IN ('todo','doing'))) "
+        "ORDER BY consumed, ai_tier IS NULL, ai_tier, title LIMIT :n",
+        {"m": media, "t": like, "n": limit}).fetchall()
+
+
+def _links(item) -> dict:
+    """Where to open a catalogue item, in consume_items columns."""
+    url, loc = item["url"] or "", item["location"] or ""
+    out = {"url": None, "reader_url": None, "file_name": None}
+    if "read.readwise.io" in url:
+        out["reader_url"] = url
+        src = item["source_url"] or ""
+        out["url"] = src if src.startswith("http") else None
+    elif url.startswith("http"):
+        out["url"] = url
+    if "/Obsidian/Hopswiki/" in loc:
+        out["file_name"] = "Hopswiki: " + loc.split("/Obsidian/Hopswiki/", 1)[1]
+    elif loc.startswith("/"):
+        out["file_name"] = loc
+    return out
+
+
+def make_room(conn, media: str, keep: int, title: str) -> sqlite3.Row | None:
+    """If the list is over its cap, drop one item the advice chose (it has a
+    `lane`; hand-added and imported rows have none) that he has not started:
+    the oldest of `media`, else the oldest of another capped medium. Returns
+    the dropped row, or None when under the cap or nothing may make way."""
+    if not wip(conn)["over_cap"]:
+        return None
+    row = conn.execute(
+        "SELECT * FROM consume_items WHERE status = 'todo' AND lane IS NOT NULL "
+        "AND media_type NOT IN ('book','work') AND id <> ? "
+        "ORDER BY media_type <> ?, date_added, id LIMIT 1", (keep, media)).fetchone()
+    if row is None:
+        return None
+    drop(conn, row["id"], "iets-urgenter", f"plaats gemaakt voor: {title}")
+    return get(conn, row["id"])
+
+
+def add_item(conn, item_id: str, media: str, quarter: str) -> tuple[int, sqlite3.Row | None]:
+    """Put a catalogue article, video or podcast on the list for `quarter`, by
+    hand. Returns (its id, the advice item that made way or None). An item that
+    was on the list before comes back to todo on this quarter, no second row."""
+    item = conn.execute(
+        f"SELECT i.*, {_AI_TIER} AS ai_tier FROM items i JOIN item_media m ON m.item_id = i.id "
+        "WHERE i.id = ? AND m.media = ?", (item_id, media)).fetchone()
+    if item is None or media not in HAND_MEDIA:
+        raise ValueError(f"geen {media} {item_id}")
+    old = conn.execute("SELECT id FROM consume_items WHERE item_id = ? ORDER BY id DESC",
+                       (item_id,)).fetchone()
+    if old:
+        carry(conn, old["id"], quarter)
+        set_status(conn, old["id"], "todo")
+        iid = old["id"]
+    else:
+        links = _links(item)
+        cur = conn.execute(
+            "INSERT INTO consume_items (item_id, title, author, media_type, source, url, "
+            "reader_url, file_name, status, quarters, revisit, auto_rating, auto_rating_date, "
+            "date_added, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)",
+            (item_id, item["title"] or item_id, item["author"], media,
+             _SOURCE.get(item["source"], item["source"]), links["url"], links["reader_url"],
+             links["file_name"], json.dumps([quarter]), item["consumed"],
+             item["ai_tier"], _today() if item["ai_tier"] else None, _today(), _now()))
+        conn.commit()
+        iid = cur.lastrowid
+    return iid, make_room(conn, media, iid, item["title"] or item_id)
 
 
 # --- work reading ----------------------------------------------------------

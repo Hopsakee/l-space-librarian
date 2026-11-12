@@ -2,10 +2,16 @@
 
 The consume list as a web page for phone, Boox and Mac. It reads and writes
 `consume_items` in `l-space.db`. The logic lives in
-`consume_selection/consume_list.py`. Adding items is not possible here, on purpose:
-the list is a filter against hoarding, and items arrive through the
-`_CONSUME_LIST` skill. The one exception is books, which Jelle picks himself: the
-Boeken tab searches his LibraryThing and ToRead books and adds one.
+`consume_selection/consume_list.py`. Most items arrive through the advice
+(`_CONSUME_ADVICE` → `_CONSUME_LIST`), but every tab can also add one by hand,
+from the catalogue only; there is no free-text entry. The Boeken tab searches his
+LibraryThing and ToRead books (since 2026-10-24). Artikelen, Kijken and Luisteren
+search Readwise, ToRead, Hopswiki, Watch Later and the podcast feeds (since
+2026-11-12). The list stays a filter against hoarding: when an add by hand puts
+the list over its cap, one advice item he has not started (`lane` set, status
+`todo`; the oldest of the same medium, else of another) is dropped with
+`iets-urgenter`. The page names the dropped item and offers Terugzetten. Hand-added
+items have no `lane`, so they never make way themselves.
 
 Five tabs: Boeken, Artikelen, Kijken, Luisteren, Werk. **Werk** is reading his job
 needs, by a deadline: added by hand here only (typed in, or a ToRead file), with
