@@ -96,6 +96,10 @@ CREATE TABLE IF NOT EXISTS consume_items (
     pages_total      INTEGER,            -- books: from the catalogue, editable
     page_current     INTEGER,            -- books: the page he is on
     deadline         TEXT,               -- work: the day it must be read (YYYY-MM-DD)
+    -- articles: can he follow it by ear (Reader's text-to-speech) or must he see it?
+    by_ear           INTEGER CHECK (by_ear IN (0, 1)),   -- 1 listen, 0 read, NULL not judged
+    by_ear_why       TEXT,               -- one line, Dutch
+    by_ear_by        TEXT CHECK (by_ear_by IN ('rules','model','jelle')),
     updated_at       TEXT NOT NULL,
     CHECK (media_type <> 'work' OR deadline IS NOT NULL)
 );
@@ -137,6 +141,17 @@ CREATE TABLE IF NOT EXISTS catalogue_refresh (
 REFRESH_FRESH_MIN = 10   # a search within this many minutes of a refresh asks none
 REFRESH_STUCK_MIN = 5    # a request still waiting after this long: the box job is not running
 
+# Columns added after the table first shipped. SQLite adds a column in place, so
+# these need no rebuild; `_add_columns` adds what an older table lacks.
+ADDED_COLUMNS = {
+    # 2026-11-18, Jelle: articles he can listen to in Reader on the bike instead
+    # of reading. Strict: needing a graph, table, code or formula means read.
+    "by_ear": "INTEGER CHECK (by_ear IN (0, 1))",
+    "by_ear_why": "TEXT",
+    "by_ear_by": "TEXT CHECK (by_ear_by IN ('rules','model','jelle'))",
+}
+EAR_BY = ("rules", "model", "jelle")
+
 CONSUME_INDEXES_DDL = [
     "CREATE INDEX IF NOT EXISTS idx_consume_status ON consume_items(status);",
     "CREATE INDEX IF NOT EXISTS idx_consume_item ON consume_items(item_id);",
@@ -149,6 +164,7 @@ def init_consume_schema(conn: sqlite3.Connection) -> None:
     conn.execute(CONSUME_ITEMS_DDL)
     conn.execute(REFRESH_DDL)
     _rebuild_if_old(conn)
+    _add_columns(conn)
     for ddl in CONSUME_INDEXES_DDL:
         conn.execute(ddl)
     conn.commit()
@@ -183,6 +199,13 @@ def _rebuild_if_old(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _add_columns(conn: sqlite3.Connection) -> None:
+    have = {r[1] for r in conn.execute("PRAGMA table_info(consume_items)")}
+    for col, decl in ADDED_COLUMNS.items():
+        if col not in have:
+            conn.execute(f"ALTER TABLE consume_items ADD COLUMN {col} {decl}")
+
+
 def _now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
 
@@ -208,16 +231,19 @@ _IN_QUARTER = "EXISTS (SELECT 1 FROM json_each(quarters) WHERE value = :q)"
 _ORDER = "ORDER BY rang IS NULL, rang, date_added, id"
 
 
-def list_items(conn, quarter: str, media: str, show: str = "open") -> list[sqlite3.Row]:
+def list_items(conn, quarter: str, media: str, show: str = "open",
+               by_ear: bool = False) -> list[sqlite3.Row]:
     """The items of one quarter and one medium. `show` is open | done | dropped.
-    Work reading has a deadline instead of a quarter: all of it, soonest first."""
+    Work reading has a deadline instead of a quarter: all of it, soonest first.
+    `by_ear` keeps only what he can listen to."""
     statuses = {"open": ("todo", "doing"), "done": ("done",), "dropped": ("dropped",)}[show]
     marks = ",".join("?" * len(statuses))
     if media == "work":
         return conn.execute(f"SELECT * FROM consume_items WHERE media_type = 'work' "
                             f"AND status IN ({marks}) ORDER BY deadline, id", statuses).fetchall()
+    ear = "AND by_ear = 1 " if by_ear else ""
     sql = (f"SELECT * FROM consume_items WHERE media_type = ? AND status IN ({marks}) "
-           f"AND EXISTS (SELECT 1 FROM json_each(quarters) WHERE value = ?) {_ORDER}")
+           f"AND EXISTS (SELECT 1 FROM json_each(quarters) WHERE value = ?) {ear}{_ORDER}")
     return conn.execute(sql, (media, *statuses, quarter)).fetchall()
 
 
@@ -236,14 +262,15 @@ def counts(conn, quarter: str, show: str = "open") -> dict[str, int]:
     return out
 
 
-def stale_open(conn, quarter: str, media: str) -> list[sqlite3.Row]:
+def stale_open(conn, quarter: str, media: str, by_ear: bool = False) -> list[sqlite3.Row]:
     """Open items NOT on this quarter: never carried over, or never given one.
     Each needs a decision, carry it or drop it. Work reading has no quarter."""
     if media == "work":
         return []
+    ear = "AND by_ear = 1 " if by_ear else ""
     return conn.execute(
         f"SELECT * FROM consume_items WHERE media_type = :m AND status IN ('todo','doing') "
-        f"AND NOT {_IN_QUARTER} {_ORDER}", {"m": media, "q": quarter}).fetchall()
+        f"AND NOT {_IN_QUARTER} {ear}{_ORDER}", {"m": media, "q": quarter}).fetchall()
 
 
 def wip(conn, today: _dt.date | None = None) -> dict:
@@ -340,6 +367,19 @@ def set_snipd_url(conn, iid: int, url: str) -> None:
     if url and not url.startswith("https://share.snipd.com/"):
         raise ValueError("a Snipd link starts with https://share.snipd.com/")
     _update(conn, iid, snipd_url=url or None)
+
+
+def set_by_ear(conn, iid: int, by_ear: int | None, why: str = "", by: str = "jelle") -> None:
+    """Listen (1), read (0) or not judged (None). His own choice (`by='jelle'`) is
+    final: the box's classifier never overwrites it."""
+    if by_ear not in (0, 1, None):
+        raise ValueError(f"by_ear must be 0, 1 or empty, not {by_ear!r}")
+    if by not in EAR_BY:
+        raise ValueError(f"by must be one of {EAR_BY}, not {by!r}")
+    if by_ear is None:
+        _update(conn, iid, by_ear=None, by_ear_why=None, by_ear_by=None)
+    else:
+        _update(conn, iid, by_ear=by_ear, by_ear_why=why.strip() or None, by_ear_by=by)
 
 
 # --- books -----------------------------------------------------------------

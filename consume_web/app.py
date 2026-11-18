@@ -224,9 +224,35 @@ def meta_line(r) -> str:
     return " · ".join(b for b in bits if b)
 
 
+def ear_line(r):
+    """Listen or read, and why: decided by the box's classifier or by him."""
+    if r["media_type"] != "article" or r["by_ear"] is None:
+        return None
+    txt = "🎧 Voorlezen" if r["by_ear"] else "👁 Zelf lezen"
+    if r["by_ear"] and not r["reader_url"]:
+        txt += " (nog niet in Reader)"
+    if r["by_ear_by"] == "jelle":
+        txt += " · jouw keuze"
+    elif r["by_ear_why"]:
+        txt += f" · {r['by_ear_why']}"
+    return P(txt, cls="meta ear")
+
+
+def ear_buttons(r, back: str):
+    """His own choice wins over the classifier. Tapping the chosen one again
+    clears it, so the classifier judges it again tonight."""
+    def btn(val: int, label: str):
+        on = r["by_ear"] == val and r["by_ear_by"] == "jelle"
+        return Button(label, name="ear", value="" if on else str(val),
+                      cls="on" if on else "", aria_pressed=str(on).lower())
+    return Div(Span("Oor of oog", cls="meta"),
+               _post(r["id"], "ear", back, btn(1, "🎧 Voorlezen"), btn(0, "👁 Zelf lezen")),
+               cls="row")
+
+
 def card(r, back: str, stale: str | None = None):
     iid = r["id"]
-    parts = [Header(H2(r["title"])), P(meta_line(r), cls="meta")]
+    parts = [Header(H2(r["title"])), P(meta_line(r), cls="meta"), ear_line(r)]
     if r["landing"]:
         parts.append(P(f"→ {r['landing']}", cls="landing"))
     parts += open_links(r)
@@ -281,6 +307,8 @@ def card(r, back: str, stale: str | None = None):
                                 value=r["pages_total"] or "", placeholder="aantal pagina's",
                                 aria_label="aantal pagina's"),
                           Button("Pagina's bewaren")))
+    if r["media_type"] == "article":
+        more.append(ear_buttons(r, back))
     if r["media_type"] == "listen":
         more.append(_post(iid, "snipd", back,
                           Input(name="url", value=r["snipd_url"] or "",
@@ -482,17 +510,20 @@ def _qs(**kw) -> str:
 
 
 @app.get("/")
-def index(q: str = "", m: str = "listen", show: str = "open", zoek: str = "", weg: int = 0):
+def index(q: str = "", m: str = "listen", show: str = "open", zoek: str = "", weg: int = 0,
+          oor: int = 0):
     now = cl.current_quarter()
     q = q if len(q) == 7 and q[4:6] == "-Q" else now
     m = m if m in cl.MEDIA else "listen"
     show = show if show in SHOW_LABEL else "open"
-    back = _qs(q=q, m=m, show=show)
+    oor = 1 if oor and m == "article" else 0
+    back = _qs(q=q, m=m, show=show, oor=oor or None)
     with closing(db()) as conn:
-        items = cl.list_items(conn, q, m, show)
+        items = cl.list_items(conn, q, m, show, by_ear=bool(oor))
+        n_ear = (len(cl.list_items(conn, q, m, show, by_ear=True)) if m == "article" else 0)
         n = cl.counts(conn, q, show)
         w = cl.wip(conn)
-        stale = cl.stale_open(conn, q, m) if show == "open" and q == now else []
+        stale = cl.stale_open(conn, q, m, by_ear=bool(oor)) if show == "open" and q == now else []
         found = []
         if zoek.strip() and show == "open":
             found = (cl.search_books(conn, zoek) if m == "book" else
@@ -520,6 +551,11 @@ def index(q: str = "", m: str = "listen", show: str = "open", zoek: str = "", we
         Nav(*[A(lbl, href="/?" + _qs(q=q, m=m, show=k), cls="on" if k == show else "")
               for k, lbl in SHOW_LABEL.items()]),
     ]
+    if m == "article":
+        # On the bike he wants only what works by ear (Jelle, 2026-11-18).
+        body.append(Nav(A("Alles", href="/?" + _qs(q=q, m=m, show=show), cls="" if oor else "on"),
+                        A(f"🎧 Voorlezen ({n_ear})", href="/?" + _qs(q=q, m=m, show=show, oor=1),
+                          cls="on" if oor else "")))
     if m == "book":
         over = w["books_over_cap"]
         body.append(P(f"Boeken open: {w['books_open']} · grens {w['book_cap']}"
@@ -548,7 +584,7 @@ def favicon():
 
 def _back(iid: int, back: str):
     # `back` is our own query string; rebuild it so nothing else gets through.
-    p = {k: v[0] for k, v in parse_qs(back).items() if k in ("q", "m", "show")}
+    p = {k: v[0] for k, v in parse_qs(back).items() if k in ("q", "m", "show", "oor")}
     return RedirectResponse(f"/?{_qs(**p)}#i{iid}", status_code=303)
 
 
@@ -645,6 +681,14 @@ def post_add_work(deadline: str, title: str = "", item_id: str = "", pages: str 
 @app.post("/item/{iid}/carry")
 def post_carry(iid: int, quarter: str, back: str = ""):
     return _apply(iid, back, cl.carry, quarter)
+
+
+@app.post("/item/{iid}/ear")
+def post_ear(iid: int, ear: str = "", back: str = ""):
+    val = {"1": 1, "0": 0, "": None}.get(ear.strip())
+    if val is None and ear.strip():
+        return Response("Niet opgeslagen: kies voorlezen of zelf lezen", status_code=400)
+    return _apply(iid, back, cl.set_by_ear, val, "", "jelle")
 
 
 @app.post("/item/{iid}/snipd")
